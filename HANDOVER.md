@@ -10,7 +10,7 @@
 
 - **定位**：Android **函数抽取型加固**命令行工具（FrostShell）+ **ADFXCBNM 运行时保护** 二合一加固器。把 dex 方法字节码整体抽空、native 层运行时回填，并叠加 root/Magisk/Frida/Xposed/模拟器等 26 项运行时检测，一条命令输出加固并重签后的 APK，无需 Android SDK。
 - **技术栈**：Python 3.11+（CLI/编排） + JDK 17+（加固引擎，Java） + Kotlin/Java + C++（保护模块源码）。引擎 `ironshell.jar` 自包含 `zipalign`/`apksig`/`dx`。
-- **minSdk/targetSdk**：本工程是**桌面 CLI 加固器**，非 Android App，本身无 minSdk。其产出的保护模块要求宿主 App `minSdk >= 26`。
+- **minSdk/targetSdk**：本工程是**桌面 CLI 加固器**，非 Android App，本身无 minSdk。其产出的保护模块要求宿主 App `minSdk >= 26`，目标 `targetSdk` 支持到 **35（Android 15）**；产物将原生库按 **16KB 页对齐**，兼容 Android 15 16KB 页设备。
 - **包名 / 应用名**：加固器命令行入口 `protect.py`；应用名 **FrostShell**。
 - **commit 哈希**：
   - 初始导入（原始压缩包）：`b0a7aa8`（`Upload from Android`）

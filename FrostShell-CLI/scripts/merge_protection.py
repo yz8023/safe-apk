@@ -372,7 +372,8 @@ def inject(apk_path, out_dir, features, engine_dir, module_dir,
             align = None
             method = e["method"]
             if name.endswith(".so") and (name.startswith("lib/") or name.startswith("lib\\")):
-                align = 4096
+                # 安卓15(API35)要求原生库 16KB 页对齐（16384）
+                align = 16384
                 method = zipfile.ZIP_STORED
             elif method == zipfile.ZIP_STORED:
                 align = 4
@@ -399,7 +400,7 @@ def inject(apk_path, out_dir, features, engine_dir, module_dir,
                 warn(f"跳过 {target_name}（已存在同名）")
                 continue
             so_data = so.read_bytes()
-            zb.write_entry(target_name, so_data, zipfile.ZIP_STORED, align=4096)
+            zb.write_entry(target_name, so_data, zipfile.ZIP_STORED, align=16384)
             injected_abis.append(abi)
         if injected_abis:
             ok(f"注入 SO: {','.join(injected_abis)}")

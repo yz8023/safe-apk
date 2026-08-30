@@ -78,7 +78,7 @@ def build_with_aapt2(aapt2, android_jar, src_java, out_apk):
         '    package="' + PKG + '"\n'
         '    android:versionCode="1"\n'
         '    android:versionName="1.0">\n'
-        '    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="33" />\n'
+        '    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />\n'
         '    <application android:label="TestApp" android:name="' + PKG + '">\n'
         '        <activity android:name="' + PKG + '.TestApp" android:exported="true">\n'
         '            <intent-filter>\n'
@@ -91,7 +91,7 @@ def build_with_aapt2(aapt2, android_jar, src_java, out_apk):
     base = wk / "base.apk"
     r = _sp.run([str(aapt2), "link", "-o", str(base), "-I", str(android_jar),
                  "--manifest", str(manifest_txt),
-                 "--min-sdk-version", "26", "--target-sdk-version", "33"],
+                 "--min-sdk-version", "26", "--target-sdk-version", "35"],
                 capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout, r.stderr)
