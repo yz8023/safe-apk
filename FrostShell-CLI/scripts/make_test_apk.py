@@ -34,9 +34,10 @@ def build_empty_arsc():
     """
     # ResStringPool_header(28B): type,headerSize,size,stringCount,styleCount,flags,stringsStart,stylesStart
     pool = struct.pack("<HHIIIIII", 0x0001, 0x001C, 0x001C, 0, 0, 0, 0, 0)
-    # ResTable_package header: type=0x0200, headerSize=0x144, size, id=0x7f, name[128], typeStrings, keyStrings
+    # ResTable_package header: type=0x0200, headerSize=0x0144, size=0x0144
+    #   + id(4B) + name[128] char16(256B) + typeStrings pool(28B) + keyStrings pool(28B)
     pkg_hdr = struct.pack("<HHII", 0x0200, 0x0144, 0x0144, 0x7F)
-    pkg = pkg_hdr + (b"\x00" * 128) + pool + pool
+    pkg = pkg_hdr + (b"\x00" * 256) + pool + pool
     # ResTable header: type=0x0002, headerSize=0x000C, size, packageCount
     tbl = struct.pack("<HHII", 0x0002, 0x000C, 0x000C + len(pkg), 1)
     return tbl + pkg
