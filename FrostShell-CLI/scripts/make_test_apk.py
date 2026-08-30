@@ -26,6 +26,22 @@ OUT.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(BASE / "engine" / "protect-module"))
 import manifest_inject as mi
 
+def build_empty_arsc():
+    """构造合法的最小空资源表 resources.arsc。
+
+    PackageManager 解析空/损坏的 resources.arsc 会报"安装包损坏/解析失败"，
+    此处生成结构完整的空 RES_TABLE（含空 string pool 与一个空 package 块）。
+    """
+    # ResStringPool_header(28B): type,headerSize,size,stringCount,styleCount,flags,stringsStart,stylesStart
+    pool = struct.pack("<HHIIIIII", 0x0001, 0x001C, 0x001C, 0, 0, 0, 0, 0)
+    # ResTable_package header: type=0x0200, headerSize=0x144, size, id=0x7f, name[128], typeStrings, keyStrings
+    pkg_hdr = struct.pack("<HHII", 0x0200, 0x0144, 0x0144, 0x7F)
+    pkg = pkg_hdr + (b"\x00" * 128) + pool + pool
+    # ResTable header: type=0x0002, headerSize=0x000C, size, packageCount
+    tbl = struct.pack("<HHII", 0x0002, 0x000C, 0x000C + len(pkg), 1)
+    return tbl + pkg
+
+
 PKG = "com.example.test"
 CLASS_DEX = OUT / "classes.dex"
 MANIFEST = OUT / "AndroidManifest.xml"
@@ -162,6 +178,5 @@ print("manifest:", MANIFEST.stat().st_size, "bytes")
 with zipfile.ZipFile(APK, "w", zipfile.ZIP_DEFLATED) as z:
     z.write(MANIFEST, "AndroidManifest.xml")
     z.write(CLASS_DEX, "classes.dex")
-    z.writestr("resources.arsc", b"")
-    z.writestr("res/values/strings.xml", b"")
+    z.writestr("resources.arsc", build_empty_arsc())
 print("apk:", APK.stat().st_size, "bytes")
