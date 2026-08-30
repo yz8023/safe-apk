@@ -127,6 +127,8 @@ class ZipBuilder:
             if len(cdata) >= len(data):
                 method = zipfile.ZIP_STORED
                 cdata = data
+        if method == zipfile.ZIP_STORED and align is None:
+            align = 4
         extra = b""
         if align is not None:
             pad = (align - ((self.offset + 30 + len(name_b) + 4) % align)) % align
