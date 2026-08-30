@@ -1,0 +1,23 @@
+# ADFXCBNM Feature Configuration
+# 本文件为 features.cfg 生成模板。运行时由 merge_protection.py / protect_plus.py
+# 根据所选功能自动生成并注入 APK 的 assets/features.cfg。
+#
+# 各字段含义（SecurityCheckProvider 读取）：
+#   version=            配置版本
+#   timestamp=          生成时间戳
+#   count=              启用功能数量
+#   features=           功能标识列表（逗号分隔）
+#   <feature>=enabled   逐个功能开关
+#   signature_sha256=   签名证书 SHA-256 基线（防二次打包，留空则跳过签名校验）
+#   dex_crc_entry=      目标 dex 的 CRC32 基线（完整性校验）
+#
+# 可用功能标识：
+#   加固(6):  sig_verify, anti_debug, anti_hook, anti_inject, anti_dump, anti_proxy
+#   保护(20): integrity, runtime_protect, mem_protect, net_secure, root_detect,
+#             emu_detect, xposed_detect, frida_detect, magisk_detect, debugger_detect,
+#             code_inject, speed_check, multi_instance, ssl_pinning, data_leak,
+#             log_protect, app_sig, webview_secure, file_control, component_protect,
+#             env_testkeys, env_selinux
+
+version=9.4.27
+features=root_detect,frida_detect,xposed_detect,magisk_detect,anti_debug

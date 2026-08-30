@@ -1,0 +1,6 @@
+# ADFXCBNM 保护模块类排除规则（FrostShell -r 参数格式，descriptor 通配）
+# 用途：若将保护模块 DEX 在 FrostShell 函数抽取 *之前* 注入目标 APK（方案 B），
+#       用本文件排除保护模块类，避免其被壳抽取或重命名导致引用异常。
+# 注意：默认二合一流程（protect_plus.py）采用“先 FrostShell 后注入”的顺序，
+#       保护模块不经壳处理，本规则仅在方案 B 时配合 `-r exclude.rules` 使用。
+Lcom/adfxcbnm/.*
