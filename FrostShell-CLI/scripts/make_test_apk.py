@@ -43,6 +43,66 @@ def build_empty_arsc():
     return tbl + pkg
 
 
+def find_tool(name):
+    """在常见位置查找 aapt2 / android.jar 等构建工具。"""
+    import shutil
+    candidates = [
+        Path(name),
+        SCRIPT_DIR / name,
+        SCRIPT_DIR / "tools" / name,
+        SCRIPT_DIR / "build" / name,
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    found = shutil.which(name)
+    if found:
+        return Path(found)
+    return None
+
+
+def build_with_aapt2(aapt2, android_jar, src_java, out_apk):
+    """用 Android 官方 aapt2 + android.jar 构造标准合法 APK。
+
+    纯 Python 手工拼装的二进制 AXML 缺少 RES_XML_RESOURCE_ID_TYPE 属性映射，
+    会被 Android 解析器判定"安装包损坏"。aapt2 link 生成的标准二进制
+    AndroidManifest.xml + resources.arsc 可被真机正常解析。
+    """
+    import subprocess as _sp
+    wk = OUT / "aapt2wk"
+    wk.mkdir(parents=True, exist_ok=True)
+    manifest_txt = wk / "AndroidManifest.xml"
+    manifest_txt.write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n'
+        '    package="' + PKG + '"\n'
+        '    android:versionCode="1"\n'
+        '    android:versionName="1.0">\n'
+        '    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="33" />\n'
+        '    <application android:label="TestApp" android:name="' + PKG + '">\n'
+        '        <activity android:name="' + PKG + '.TestApp" android:exported="true">\n'
+        '            <intent-filter>\n'
+        '                <action android:name="android.intent.action.MAIN" />\n'
+        '                <category android:name="android.intent.category.LAUNCHER" />\n'
+        '            </intent-filter>\n'
+        '        </activity>\n'
+        '    </application>\n'
+        '</manifest>\n')
+    base = wk / "base.apk"
+    r = _sp.run([str(aapt2), "link", "-o", str(base), "-I", str(android_jar),
+                 "--manifest", str(manifest_txt),
+                 "--min-sdk-version", "26", "--target-sdk-version", "33"],
+                capture_output=True, text=True)
+    if r.returncode != 0:
+        print(r.stdout, r.stderr)
+        return False
+    with zipfile.ZipFile(str(base), "a", zipfile.ZIP_DEFLATED) as z:
+        z.write(str(CLASS_DEX), "classes.dex")
+    import shutil as _sh
+    _sh.copyfile(base, out_apk)
+    return True
+
+
 PKG = "com.example.test"
 CLASS_DEX = OUT / "classes.dex"
 MANIFEST = OUT / "AndroidManifest.xml"
@@ -80,7 +140,18 @@ if r.returncode != 0:
     print(r.stdout); print(r.stderr); sys.exit("dx failed")
 print("dex:", CLASS_DEX.stat().st_size, "bytes")
 
-# 2) 构造二进制 AndroidManifest.xml
+# 2) 优先用 Android 官方 aapt2 构建标准合法 APK（推荐）
+#    手工拼装二进制 AXML 缺少 RES_XML_RESOURCE_ID_TYPE 属性映射，
+#    Android 真机解析会判"安装包损坏"。aapt2 link 生成的标准格式无此问题。
+AAPT2 = find_tool("aapt2")
+ANDROID_JAR = find_tool("android.jar")
+if AAPT2 is not None and ANDROID_JAR is not None:
+    if build_with_aapt2(AAPT2, ANDROID_JAR, SRC_JAVA, APK):
+        print("apk (aapt2):", APK.stat().st_size, "bytes")
+        sys.exit(0)
+    print("aapt2 构建失败，回退纯 Python 构建...")
+
+# 3) 构造二进制 AndroidManifest.xml（纯 Python 兜底）
 strs = mi.StringPool([], True)
 add = strs.add
 PKG_URI = "http://schemas.android.com/apk/res/android"
