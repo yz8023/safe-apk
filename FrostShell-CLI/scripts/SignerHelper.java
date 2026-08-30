@@ -82,7 +82,9 @@ public class SignerHelper {
                 .setV2SigningEnabled(true)
                 .setInputApk(input)
                 .setOutputApk(output)
-                .setMinSdkVersion(26)
+                // minSdk=1：强制生成覆盖 API 9+ 的 v1 签名（SHA-256/RSA）。
+                // 若设 26，apksig 会跳过 v1 导致 APK 残留旧 META-INF，v1 校验失败，安装报"破损"。
+                .setMinSdkVersion(1)
                 .build();
         signer.sign();
         System.out.println("signed ok -> " + output.getAbsolutePath() + " sha256=" + sha);
