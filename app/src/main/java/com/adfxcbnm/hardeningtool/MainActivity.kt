@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -141,6 +142,17 @@ fun MainScreen() {
     var useFrostEngine by remember { mutableStateOf(prefs.getBoolean("use_frost_engine", false)) }
 
     var outputDirCustom by remember { mutableStateOf(OutputSettings.getCustomDir(context)) }
+    var outputToSource by remember { mutableStateOf(OutputSettings.getOutputToSource(context)) }
+    val toggleOutputToSource: () -> Unit = {
+        val newVal = !outputToSource
+        outputToSource = newVal
+        OutputSettings.setOutputToSource(context, newVal)
+    }
+    var signEnabled by remember { mutableStateOf(prefs.getBoolean("sign_enabled", true)) }
+    var signKeystorePath by remember { mutableStateOf(prefs.getString("sign_keystore_path", "") ?: "") }
+    var signAlias by remember { mutableStateOf(prefs.getString("sign_alias", "") ?: "") }
+    var signStorePass by remember { mutableStateOf(prefs.getString("sign_store_pass", "") ?: "") }
+    var signKeyPass by remember { mutableStateOf(prefs.getString("sign_key_pass", "") ?: "") }
     var frostKeepClasses by remember { mutableStateOf(prefs.getBoolean("frost_keep_classes", false)) }
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
@@ -149,6 +161,10 @@ fun MainScreen() {
     }
     var showOutputDirTextDialog by remember { mutableStateOf(false) }
     var outputDirTextInput by remember { mutableStateOf("") }
+    var showSignInfoDialog by remember { mutableStateOf(false) }
+    var signAliasInput by remember { mutableStateOf("") }
+    var signStorePassInput by remember { mutableStateOf("") }
+    var signKeyPassInput by remember { mutableStateOf("") }
 
     var hardeningExpanded by remember { mutableStateOf(false) }
     var protectionExpanded by remember { mutableStateOf(false) }
@@ -232,6 +248,29 @@ fun MainScreen() {
         }
     }
 
+    val signKeystorePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val ext = uri.lastPathSegment?.substringAfterLast(".", "keystore") ?: "keystore"
+                val target = File(context.filesDir, "custom_sign_keystore.$ext")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (target.exists() && target.length() > 0) {
+                    signKeystorePath = target.absolutePath
+                    prefs.edit().putString("sign_keystore_path", target.absolutePath).apply()
+                    addLog("已选择签名keystore: ${target.name}", LogType.SUCCESS)
+                } else {
+                    addLog("keystore文件读取失败", LogType.WARNING)
+                }
+            } catch (e: Exception) {
+                addLog("导入keystore失败: ${e.message}", LogType.ERROR)
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             if (!android.os.Environment.isExternalStorageManager()) {
@@ -267,6 +306,7 @@ fun MainScreen() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
         ) {
             // Content
@@ -407,12 +447,34 @@ fun MainScreen() {
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Text(
-                                text = outputDirCustom ?: "默认（跟随所选APK所在目录）",
+                                text = when {
+                                    outputToSource -> "源文件路径（所选APK所在目录）"
+                                    outputDirCustom != null -> outputDirCustom!!
+                                    else -> "默认（跟随所选APK所在目录）"
+                                },
                                 modifier = Modifier.fillMaxWidth().padding(10.dp),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable { toggleOutputToSource() },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("输出到源文件路径", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "将加固产物输出到所选APK所在目录",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = outputToSource,
+                                onCheckedChange = { toggleOutputToSource() }
                             )
                         }
                         Spacer(Modifier.height(8.dp))
@@ -535,7 +597,12 @@ fun MainScreen() {
                             keepClasses = frostKeepClasses,
                             smaller = frostSmaller,
                             verifySign = frostVerifySign,
-                            excludedAbi = if (frostExcludedAbi.isEmpty()) null else frostExcludedAbi.toList()
+                            excludedAbi = if (frostExcludedAbi.isEmpty()) null else frostExcludedAbi.toList(),
+                            signEnabled = signEnabled,
+                            signKeystorePath = signKeystorePath.ifEmpty { null },
+                            signAlias = signAlias.ifEmpty { null },
+                            signStorePass = signStorePass.ifEmpty { null },
+                            signKeyPass = signKeyPass.ifEmpty { null }
                         )
                         scope.launch {
                             val result = if (useFrostEngine) {
@@ -563,7 +630,12 @@ fun MainScreen() {
                                     }
                                 },
                                 timestampedOutput = timestampedOutput,
-                                autoVerify = autoVerify
+                                autoVerify = autoVerify,
+                                signEnabled = signEnabled,
+                                signKeystorePath = signKeystorePath.ifEmpty { null },
+                                signAlias = signAlias.ifEmpty { null },
+                                signStorePass = signStorePass.ifEmpty { null },
+                                signKeyPass = signKeyPass.ifEmpty { null }
                             )
                             }
                             isProcessing = false
@@ -1130,12 +1202,34 @@ fun MainScreen() {
                 ) {
                     Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
                         Text(
-                            text = outputDirCustom ?: "默认（跟随所选APK所在目录）",
+                            text = when {
+                                outputToSource -> "源文件路径（所选APK所在目录）"
+                                outputDirCustom != null -> outputDirCustom!!
+                                else -> "默认（跟随所选APK所在目录）"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable { toggleOutputToSource() },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("输出到源文件路径", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "将加固产物输出到所选APK所在目录",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = outputToSource,
+                                onCheckedChange = { toggleOutputToSource() }
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilledTonalButton(
@@ -1231,9 +1325,143 @@ fun MainScreen() {
                     }
                 }
 
+                Spacer(Modifier.height(16.dp))
+                Text("签名设置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                SettingRow(
+                    icon = Icons.Default.Lock,
+                    title = "加固后签名",
+                    subtitle = "关闭后输出未签名APK，需自行签名",
+                    checked = signEnabled,
+                    onCheckedChange = {
+                        signEnabled = it
+                        prefs.edit().putBoolean("sign_enabled", it).apply()
+                        addLog(if (it) "签名已开启" else "签名已关闭，将输出未签名APK", LogType.INFO)
+                    }
+                )
+                if (signEnabled) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                            Text(
+                                text = if (signKeystorePath.isNotEmpty())
+                                    "自定义keystore: ${File(signKeystorePath).name}"
+                                else
+                                    "默认调试keystore (adh_debug.p12)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilledTonalButton(
+                                    onClick = { signKeystorePickerLauncher.launch(arrayOf("*/*")) },
+                                    modifier = Modifier.weight(1f).height(36.dp),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("选择keystore", fontSize = 13.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        signAliasInput = signAlias
+                                        signStorePassInput = signStorePass
+                                        signKeyPassInput = signKeyPass
+                                        showSignInfoDialog = true
+                                    },
+                                    modifier = Modifier.weight(1f).height(36.dp),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("别名/密码", fontSize = 13.sp)
+                                }
+                                TextButton(
+                                    onClick = {
+                                        signKeystorePath = ""
+                                        signAlias = ""
+                                        signStorePass = ""
+                                        signKeyPass = ""
+                                        prefs.edit()
+                                            .remove("sign_keystore_path")
+                                            .remove("sign_alias")
+                                            .remove("sign_store_pass")
+                                            .remove("sign_key_pass")
+                                            .apply()
+                                        addLog("已清除自定义签名，使用默认keystore", LogType.INFO)
+                                    },
+                                    modifier = Modifier.height(36.dp)
+                                ) {
+                                    Text("清除", fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    if (showSignInfoDialog) {
+        AlertDialog(
+            onDismissRequest = { showSignInfoDialog = false },
+            title = { Text("签名别名/密码") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "自定义keystore的别名与密码。留空时使用keystore中第一个别名。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = signAliasInput,
+                        onValueChange = { signAliasInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("别名 (alias)") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = signStorePassInput,
+                        onValueChange = { signStorePassInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("存储密码 (store password)") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                    OutlinedTextField(
+                        value = signKeyPassInput,
+                        onValueChange = { signKeyPassInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("密钥密码 (key password)") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    signAlias = signAliasInput.trim()
+                    signStorePass = signStorePassInput
+                    signKeyPass = signKeyPassInput
+                    prefs.edit()
+                        .putString("sign_alias", signAlias)
+                        .putString("sign_store_pass", signStorePass)
+                        .putString("sign_key_pass", signKeyPass)
+                        .apply()
+                    addLog("签名别名/密码已保存", LogType.SUCCESS)
+                    showSignInfoDialog = false
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSignInfoDialog = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showOutputDirTextDialog) {
@@ -1592,7 +1820,12 @@ private suspend fun processApk(
     detailLog: (String) -> Unit,
     onProgress: (Float) -> Unit,
     timestampedOutput: Boolean,
-    autoVerify: Boolean
+    autoVerify: Boolean,
+    signEnabled: Boolean,
+    signKeystorePath: String?,
+    signAlias: String?,
+    signStorePass: String?,
+    signKeyPass: String?
 ): ProcessResult = withContext(Dispatchers.IO) {
     val t0 = System.currentTimeMillis()
     val stages = StageTracker(addLog)
@@ -1652,23 +1885,50 @@ private suspend fun processApk(
         var certSha256 = ""
         var signKey: PrivateKey? = null
         var signCert: X509Certificate? = null
-        val keystoreFile = File(context.filesDir, "adh_debug.p12")
-        try {
-            if (!keystoreFile.exists()) {
-                generateDebugKeystore(keystoreFile, addLog)
+        if (signEnabled) {
+            try {
+                if (!signKeystorePath.isNullOrBlank()) {
+                    val customKsFile = File(signKeystorePath)
+                    if (!customKsFile.exists()) {
+                        addLog("自定义签名keystore不存在: ${customKsFile.absolutePath}，回退默认签名", LogType.WARNING)
+                    } else {
+                        val storePass = signStorePass?.toCharArray() ?: "android".toCharArray()
+                        val keyPass = signKeyPass?.toCharArray() ?: storePass
+                        val keyStore = java.security.KeyStore.getInstance("PKCS12")
+                        FileInputStream(customKsFile).use { fis ->
+                            keyStore.load(fis, storePass)
+                        }
+                        val alias = signAlias?.takeIf { it.isNotBlank() } ?: runCatching { keyStore.aliases().nextElement() }.getOrNull()
+                        if (alias != null) {
+                            signKey = keyStore.getKey(alias, keyPass) as PrivateKey
+                            signCert = keyStore.getCertificate(alias) as X509Certificate
+                            detailLog("使用自定义签名keystore: ${customKsFile.name} (alias=$alias)")
+                        } else {
+                            addLog("自定义keystore中未找到可用别名", LogType.WARNING)
+                        }
+                    }
+                }
+                if (signKey == null) {
+                    val keystoreFile = File(context.filesDir, "adh_debug.p12")
+                    if (!keystoreFile.exists()) {
+                        generateDebugKeystore(keystoreFile, addLog)
+                    }
+                    val keyStore = java.security.KeyStore.getInstance("PKCS12")
+                    FileInputStream(keystoreFile).use { fis ->
+                        keyStore.load(fis, "android".toCharArray())
+                    }
+                    val alias0 = keyStore.aliases().nextElement()
+                    signKey = keyStore.getKey(alias0, "android".toCharArray()) as PrivateKey
+                    signCert = keyStore.getCertificate(alias0) as X509Certificate
+                }
+                certSha256 = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(signCert!!.encoded)
+                    .joinToString("") { "%02x".format(it) }
+            } catch (e: Exception) {
+                addLog("读取签名证书失败，跳过防二次打包基线: ${e.message}", LogType.WARNING)
             }
-            val keyStore = java.security.KeyStore.getInstance("PKCS12")
-            FileInputStream(keystoreFile).use { fis ->
-                keyStore.load(fis, "android".toCharArray())
-            }
-            val alias0 = keyStore.aliases().nextElement()
-            signKey = keyStore.getKey(alias0, "android".toCharArray()) as PrivateKey
-            signCert = keyStore.getCertificate(alias0) as X509Certificate
-            certSha256 = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(signCert.encoded)
-                .joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
-            addLog("读取签名证书失败，跳过防二次打包基线: ${e.message}", LogType.WARNING)
+        } else {
+            detailLog("签名已禁用，将输出未签名APK")
         }
         if (certSha256.isNotEmpty()) detailLog("签名基线: ${certSha256.take(16)}...")
 
@@ -1900,34 +2160,51 @@ private suspend fun processApk(
         }
         onProgress(0.6f)
 
-        if (signKey == null || signCert == null) {
-            addLog("签名证书不可用，无法签名", LogType.ERROR)
-            return@withContext ProcessResult(false, "", 0, "", 0f)
-        }
-        stages.begin("签名")
-        try {
-            try {
-                Class.forName("com.android.apksig.ApkSigner")
-            } catch (e: ClassNotFoundException) {
-                addLog("apksig库不可用，无法签名", LogType.ERROR)
+        if (!signEnabled) {
+            if (!intermediateFile.exists() || intermediateFile.length() <= 0) {
+                addLog("中间文件不存在或为空", LogType.ERROR)
                 return@withContext ProcessResult(false, "", 0, "", 0f)
             }
-            val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
-            val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
-                .setV1SigningEnabled(true)
-                .setV2SigningEnabled(true)
-                .setInputApk(intermediateFile)
-                .setOutputApk(outputFile)
-                .setMinSdkVersion(26)
-                .build()
-            apkSigner.sign()
-            addLog("签名完成 (v1+v2)", LogType.SUCCESS)
-            stages.end(LogType.SUCCESS)
-        } catch (signErr: Exception) {
-            stages.end(LogType.ERROR, signErr.message)
-            addLog("签名失败: ${signErr.javaClass.simpleName}: ${signErr.message}", LogType.ERROR)
-            signErr.stackTrace.take(5).forEach { addLog("  at ${it.className}.${it.methodName}:${it.lineNumber}", LogType.ERROR) }
-            return@withContext ProcessResult(false, "", 0, "", 0f)
+            stages.begin("跳过签名")
+            try {
+                intermediateFile.copyTo(outputFile, overwrite = true)
+                addLog("签名已禁用，输出未签名APK", LogType.WARNING)
+                stages.end(LogType.WARNING, "未签名")
+            } catch (copyErr: Exception) {
+                stages.end(LogType.ERROR, copyErr.message)
+                addLog("复制输出失败: ${copyErr.message}", LogType.ERROR)
+                return@withContext ProcessResult(false, "", 0, "", 0f)
+            }
+        } else {
+            if (signKey == null || signCert == null) {
+                addLog("签名证书不可用，无法签名", LogType.ERROR)
+                return@withContext ProcessResult(false, "", 0, "", 0f)
+            }
+            stages.begin("签名")
+            try {
+                try {
+                    Class.forName("com.android.apksig.ApkSigner")
+                } catch (e: ClassNotFoundException) {
+                    addLog("apksig库不可用，无法签名", LogType.ERROR)
+                    return@withContext ProcessResult(false, "", 0, "", 0f)
+                }
+                val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
+                val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
+                    .setV1SigningEnabled(true)
+                    .setV2SigningEnabled(true)
+                    .setInputApk(intermediateFile)
+                    .setOutputApk(outputFile)
+                    .setMinSdkVersion(26)
+                    .build()
+                apkSigner.sign()
+                addLog("签名完成 (v1+v2)", LogType.SUCCESS)
+                stages.end(LogType.SUCCESS)
+            } catch (signErr: Exception) {
+                stages.end(LogType.ERROR, signErr.message)
+                addLog("签名失败: ${signErr.javaClass.simpleName}: ${signErr.message}", LogType.ERROR)
+                signErr.stackTrace.take(5).forEach { addLog("  at ${it.className}.${it.methodName}:${it.lineNumber}", LogType.ERROR) }
+                return@withContext ProcessResult(false, "", 0, "", 0f)
+            }
         }
         onProgress(0.9f)
 

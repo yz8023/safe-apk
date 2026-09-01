@@ -3,6 +3,7 @@ package com.adfxcbnm.hardeningtool
 import android.content.Context
 import com.adfxcbnm.frostshell.builder.FrostApk
 import com.adfxcbnm.frostshell.config.FrostConst
+import com.adfxcbnm.frostshell.config.FrostShellConfig
 import com.adfxcbnm.frostshell.util.FrostFileUtils
 import java.io.File
 
@@ -51,10 +52,24 @@ object FrostShellEngine {
     }
 
     fun protectApk(apkPath: String, outputDir: File, options: FrostEngineOptions = FrostEngineOptions()): File {
+        if (!options.signEnabled) {
+            FrostShellConfig.getInstance().setSignatureConfig(null)
+        } else if (!options.signKeystorePath.isNullOrBlank()) {
+            FrostShellConfig.getInstance().setSignatureConfig(
+                FrostShellConfig.SignatureConfig().apply {
+                    setKeystore(options.signKeystorePath)
+                    setAlias(options.signAlias ?: "")
+                    setStorePassword(options.signStorePass ?: "")
+                    setKeyPassword(options.signKeyPass ?: "")
+                }
+            )
+        } else {
+            FrostShellConfig.getInstance().setSignatureConfig(null)
+        }
         val builder = FrostApk.Builder()
             .filePath(apkPath)
             .outputPath(outputDir.absolutePath)
-            .sign(true)
+            .sign(options.signEnabled)
             .apply {
                 if (options.keepClasses) this.keepClasses(true)
                 if (options.smaller) this.smaller(true)

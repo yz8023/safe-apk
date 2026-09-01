@@ -10,6 +10,7 @@ object OutputSettings {
     private const val PREF = "adfxcbnm_settings"
     const val KEY_CUSTOM_DIR = "output_dir"
     const val KEY_SAF_URI = "output_dir_saf_uri"
+    const val KEY_OUTPUT_TO_SOURCE = "output_to_source"
 
     fun getCustomDir(context: Context): String? =
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
@@ -18,6 +19,15 @@ object OutputSettings {
     fun setCustomDir(context: Context, path: String?) {
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
             .edit().putString(KEY_CUSTOM_DIR, path ?: "").apply()
+    }
+
+    fun getOutputToSource(context: Context): Boolean =
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .getBoolean(KEY_OUTPUT_TO_SOURCE, false)
+
+    fun setOutputToSource(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_OUTPUT_TO_SOURCE, enabled).apply()
     }
 
     fun getSafUri(context: Context): String? =
@@ -73,13 +83,22 @@ object OutputSettings {
         File(context.getExternalFilesDir(null), "ADFXCBNM")
 
     fun getOutputDir(context: Context, sourceApkPath: String?): Pair<File, String> {
-        getCustomDir(context)?.let { custom ->
-            if (isWritable(custom)) return Pair(File(custom), "自定义目录")
-        }
-        if (sourceApkPath != null) {
-            val srcDir = File(sourceApkPath).parentFile
-            if (srcDir != null && srcDir.exists() && srcDir.canWrite()) {
-                return Pair(srcDir, "来源APK目录")
+        if (getOutputToSource(context)) {
+            if (sourceApkPath != null) {
+                val srcDir = File(sourceApkPath).parentFile
+                if (srcDir != null && srcDir.exists() && srcDir.canWrite()) {
+                    return Pair(srcDir, "源文件路径")
+                }
+            }
+        } else {
+            getCustomDir(context)?.let { custom ->
+                if (isWritable(custom)) return Pair(File(custom), "自定义目录")
+            }
+            if (sourceApkPath != null) {
+                val srcDir = File(sourceApkPath).parentFile
+                if (srcDir != null && srcDir.exists() && srcDir.canWrite()) {
+                    return Pair(srcDir, "来源APK目录")
+                }
             }
         }
         val fallback = defaultDir(context)
