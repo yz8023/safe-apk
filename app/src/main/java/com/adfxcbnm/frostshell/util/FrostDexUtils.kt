@@ -169,7 +169,7 @@ object FrostDexUtils {
         var randomAccessFile: RandomAccessFile? = null
         val dexData = FrostIoUtils.readFile(dexFile.absolutePath)
         FrostIoUtils.writeFile(outDexFile.absolutePath, dexData)
-        val dumpJSON = JSONArray()
+        val dumpJSON = if (dumpCode) JSONArray() else null
         try {
             dex = Dex(dexFile)
             val dexNumber = getDexNumber(dexFile.name)
@@ -182,8 +182,8 @@ object FrostDexUtils {
                     FrostLogUtils.noisy("class '%s' data offset is zero", classDef.toString())
                     continue
                 }
-                val classJSONObject = JSONObject()
-                val classJSONArray = JSONArray()
+                val classJSONObject = if (dumpCode) JSONObject() else null
+                val classJSONArray = if (dumpCode) JSONArray() else null
                 val classData = dex.readClassData(classDef)
                 val className = dex.typeNames()[classDef.typeIndex]
                 val humanizeTypeName = FrostTypeUtils.getHumanizeTypeName(className)
@@ -195,21 +195,25 @@ object FrostDexUtils {
                     val instruction = extractMethod(dex, randomAccessFile, classDef, method, smaller)
                     if (instruction == null) continue
                     instructionList.add(instruction)
-                    putToJSON(classJSONArray, instruction)
+                    if (dumpCode && classJSONArray != null) {
+                        putToJSON(classJSONArray, instruction)
+                    }
                 }
-                classJSONObject.put(humanizeTypeName, classJSONArray)
-                dumpJSON.put(classJSONObject)
+                if (dumpCode && classJSONObject != null && dumpJSON != null) {
+                    classJSONObject.put(humanizeTypeName, classJSONArray)
+                    dumpJSON.put(classJSONObject)
+                }
             }
         } catch (e: Exception) {
             FrostIoUtils.close(randomAccessFile)
-            if (dumpCode) {
+            if (dumpCode && dumpJSON != null) {
                 dumpJSON(packageName, dexFile, dumpJSON)
             }
             e.printStackTrace()
         } finally {
             FrostIoUtils.close(randomAccessFile)
         }
-        if (dumpCode) {
+        if (dumpCode && dumpJSON != null) {
             dumpJSON(packageName, dexFile, dumpJSON)
         }
         return instructionList
