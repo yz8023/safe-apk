@@ -13,8 +13,8 @@ android {
         applicationId = "com.adfxcbnm.hardeningtool"
         minSdk = 26
         targetSdk = 34
-        versionCode = 29
-        versionName = "9.4.27"
+        versionCode = 30
+        versionName = "9.5.0"
 
         vectorDrawables {
             useSupportLibrary = true

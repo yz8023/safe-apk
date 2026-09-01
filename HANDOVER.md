@@ -1,7 +1,7 @@
 # Android 加固工具（AndroidHardeningTool）项目交接文档
 
 > 项目代号：AndroidHardeningTool
-> 版本：9.4.27（versionCode 29）
+> 版本：9.5.0（versionCode 30）
 > 交接日期：2026-09-01
 > 交接人：AI 交接专家（MonkeyCode）
 
@@ -76,7 +76,7 @@ rm -rf app/.cxx
 
 ```bash
 aapt dump badging app/build/outputs/apk/debug/app-debug.apk | head -5
-# 期望输出包含: package name='com.adfxcbnm.hardeningtool' versionName='9.4.27'
+# 期望输出包含: package name='com.adfxcbnm.hardeningtool' versionName='9.5.0'
 ```
 
 ## 5. 功能清单
@@ -89,7 +89,7 @@ DEX 加密加固（AES-256-CBC）、DEX 虚拟化（自定义字节码）、SO �
 
 完整性校验（SHA-256）、运行时保护（JNI）、内存保护（完整性标记）、网络安全（SSL 固定）、ROOT 检测（su 扫描）、模拟器检测（多维度）、Xposed 检测（类加载）、Frida 检测（端口扫描）、Magisk 检测（路径）、调试器检测（JDWP）、代码注入检测（库扫描）、速度检测（时序分析）、多开检测（进程分析）、SSL 证书校验（证书固定）、数据防泄漏（保护标记）、日志保护（输出控制）、应用签名校验（哈希验证）、WebView 安全（配置保护）、文件访问控制（权限检测）、应用组件保护（Manifest）。
 
-### 5.3 FrostShell 引擎（新增，v9.4.27 集成）
+### 5.3 FrostShell 引擎（新增，v9.4.27 集成，v9.5.0 扩展高级选项）
 
 - Kotlin 移植引擎，包 `com.adfxcbnm.frostshell.*`，原 Java 引擎字节码编译进 `app/libs/ironshell-deps.jar`（11.8MB，编译必需依赖）。
 - 引擎封装 `FrostShellEngine`（`prepare` / `protectApk` / `findOutputApk`），运行时从 assets 释放 `frostshell/` 目录到 App 私有目录。
@@ -138,11 +138,11 @@ AndroidHardeningTool/
 
 | 配置 | 位置 | 说明 |
 |------|------|------|
-| versionName / versionCode | `app/build.gradle.kts` | `9.4.27` / `29` |
+| versionName / versionCode | `app/build.gradle.kts` | `9.5.0` / `30` |
 | applicationId / namespace | `app/build.gradle.kts` | `com.adfxcbnm.hardeningtool` |
 | SDK 路径 | `local.properties`（不入库） | `sdk.dir=<你的 SDK 路径>` |
 | 引擎开关默认值 | `MainActivity.kt` prefs `use_frost_engine` | 默认 `false`（内置流程） |
-| 加固输出目录 | `MainActivity.kt` | `/storage/emulated/0/ADFXCBNM/` |
+| 加固输出目录 | `OutputSettings.kt` / 设置弹窗 | 默认跟随所选 APK 所在目录；可在设置中自定义（SAF 选择或手动输入） |
 | 引擎签名 keystore | `assets/ironshell.jks` | 运行时由引擎读取（默认口令，非机密） |
 | 数据下载密钥 | （无） | 项目无外部 API，无需真实密钥；如未来接入，一律用占位符 `<YOUR_API_KEY>` |
 
@@ -177,7 +177,7 @@ AndroidHardeningTool/
 | 源码 zip | `AndroidHardeningTool源码.zip` | 完整可编译源码 + CI 配置 |
 | 本交接文档 | `HANDOVER.md` | 本文档 |
 
-GitHub 远程仓库：`https://github.com/yz8023/safe-apk.git`（本交接代码已推送至 main 分支并发布 Release v9.4.27）。
+GitHub 远程仓库：`https://github.com/yz8023/safe-apk.git`（本交接代码已推送至 main 分支并发布 Release v9.5.0）。
 
 ## 11. 已知问题与注意事项
 
@@ -200,7 +200,7 @@ GitHub 远程仓库：`https://github.com/yz8023/safe-apk.git`（本交接代码
 ## 13. Git 与发布
 
 - 仓库：`https://github.com/yz8023/safe-apk.git`，分支 `main`。
-- 版本标签：`v9.4.27`（Release 与源码包以该标签为验收基准）。
+- 版本标签：`v9.5.0`（Release 与源码包以该标签为验收基准）。
 - 当前提交哈希：可通过 `git rev-parse --short HEAD` 获取，不在此硬编码以避免与版本快照漂移。
 - CI：`.github/workflows/build-apk.yml` 在 push 到 main 或手动触发时构建 debug APK 并上传 artifact。
 - 提交约定：功能改动用 `feat:`，修复用 `fix:`，文档用 `docs:`。

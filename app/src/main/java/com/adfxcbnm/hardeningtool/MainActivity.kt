@@ -53,8 +53,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.4.27"
-private const val CONFIG_VERSION = "9.4.27"
+private const val APP_VERSION = "9.5.0"
+private const val CONFIG_VERSION = "9.5.0"
 
 
 
@@ -140,6 +140,16 @@ fun MainScreen() {
     var rememberSelection by remember { mutableStateOf(prefs.getBoolean("remember_selection", false)) }
     var useFrostEngine by remember { mutableStateOf(prefs.getBoolean("use_frost_engine", false)) }
 
+    var outputDirCustom by remember { mutableStateOf(OutputSettings.getCustomDir(context)) }
+    var frostKeepClasses by remember { mutableStateOf(prefs.getBoolean("frost_keep_classes", false)) }
+    var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
+    var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
+    var frostExcludedAbi by remember {
+        mutableStateOf(prefs.getStringSet("frost_excluded_abi", emptySet())?.toMutableSet() ?: mutableSetOf())
+    }
+    var showOutputDirTextDialog by remember { mutableStateOf(false) }
+    var outputDirTextInput by remember { mutableStateOf("") }
+
     var hardeningExpanded by remember { mutableStateOf(false) }
     var protectionExpanded by remember { mutableStateOf(false) }
 
@@ -202,6 +212,23 @@ fun MainScreen() {
             selectedApkUri = uri
             selectedApkName = uri.lastPathSegment?.substringAfterLast("/") ?: "unknown.apk"
             addLog("已选择APK: $selectedApkName", LogType.SUCCESS)
+        }
+    }
+
+    val outputDirPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val path = OutputSettings.safTreeToPath(uri)
+            if (path != null && OutputSettings.isWritable(path)) {
+                OutputSettings.setCustomDir(context, path)
+                outputDirCustom = path
+                addLog("输出目录已设置: $path", LogType.SUCCESS)
+            } else {
+                outputDirTextInput = ""
+                showOutputDirTextDialog = true
+                addLog("所选目录无法解析为可写路径，请手动输入", LogType.WARNING)
+            }
         }
     }
 
@@ -430,6 +457,12 @@ fun MainScreen() {
                         isProcessing = true
                         progress = 0f
                         logs = emptyList()
+                        val frostOptions = FrostEngineOptions(
+                            keepClasses = frostKeepClasses,
+                            smaller = frostSmaller,
+                            verifySign = frostVerifySign,
+                            excludedAbi = if (frostExcludedAbi.isEmpty()) null else frostExcludedAbi.toList()
+                        )
                         scope.launch {
                             val result = if (useFrostEngine) {
                                 processFrostShellApk(
@@ -442,7 +475,8 @@ fun MainScreen() {
                                         }
                                     },
                                     timestampedOutput = timestampedOutput,
-                                    autoVerify = autoVerify
+                                    autoVerify = autoVerify,
+                                    frostOptions = frostOptions
                                 )
                             } else {
                                 processApk(
@@ -1008,9 +1042,159 @@ fun MainScreen() {
                     }
                 )
 
+                Spacer(Modifier.height(16.dp))
+                Text("输出目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                        Text(
+                            text = outputDirCustom ?: "默认（跟随所选APK所在目录）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilledTonalButton(
+                                onClick = { outputDirPickerLauncher.launch(null) },
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("选择目录", fontSize = 13.sp)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    outputDirTextInput = outputDirCustom ?: ""
+                                    showOutputDirTextDialog = true
+                                },
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("手动输入", fontSize = 13.sp)
+                            }
+                            TextButton(
+                                onClick = {
+                                    OutputSettings.setCustomDir(context, null)
+                                    OutputSettings.setSafUri(context, null)
+                                    outputDirCustom = null
+                                    addLog("输出目录已恢复默认", LogType.INFO)
+                                },
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Text("恢复默认", fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Text("FrostShell 引擎选项", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                SettingRow(
+                    icon = Icons.Default.TrendingUp,
+                    title = "保留部分类",
+                    subtitle = "跳过部分类加固，提升启动速度 (keep-classes)",
+                    checked = frostKeepClasses,
+                    onCheckedChange = {
+                        frostKeepClasses = it
+                        prefs.edit().putBoolean("frost_keep_classes", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Compress,
+                    title = "瘦身",
+                    subtitle = "以兼容性/性能换取更小产物 (smaller)",
+                    checked = frostSmaller,
+                    onCheckedChange = {
+                        frostSmaller = it
+                        prefs.edit().putBoolean("frost_smaller", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Fingerprint,
+                    title = "运行时验签",
+                    subtitle = "加固包运行时校验签名 (verify-sign)",
+                    checked = frostVerifySign,
+                    onCheckedChange = {
+                        frostVerifySign = it
+                        prefs.edit().putBoolean("frost_verify_sign", it).apply()
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("剔除 ABI（未勾选的将保留）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
+                val allAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    allAbis.forEach { abi ->
+                        val excluded = frostExcludedAbi.contains(abi)
+                        FilterChip(
+                            selected = excluded,
+                            onClick = {
+                                val newSet = frostExcludedAbi.toMutableSet()
+                                if (excluded) newSet.remove(abi) else newSet.add(abi)
+                                if (newSet.size < allAbis.size) {
+                                    frostExcludedAbi = newSet
+                                    prefs.edit().putStringSet("frost_excluded_abi", newSet).apply()
+                                } else {
+                                    addLog("不能剔除全部 ABI，至少保留一个", LogType.WARNING)
+                                }
+                            },
+                            label = { Text(abi, fontSize = 12.sp) }
+                        )
+                    }
+                }
+
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    if (showOutputDirTextDialog) {
+        AlertDialog(
+            onDismissRequest = { showOutputDirTextDialog = false },
+            title = { Text("手动输入输出目录") },
+            text = {
+                Column {
+                    Text(
+                        "输入绝对路径，例如 /storage/emulated/0/ADFXCBNM。路径不可写或无法创建时，流程将回退默认目录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = outputDirTextInput,
+                        onValueChange = { outputDirTextInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("/storage/emulated/0/ADFXCBNM") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val p = outputDirTextInput.trim()
+                    if (p.isNotEmpty() && OutputSettings.isWritable(p)) {
+                        OutputSettings.setCustomDir(context, p)
+                        outputDirCustom = p
+                        addLog("输出目录已设置: $p", LogType.SUCCESS)
+                        showOutputDirTextDialog = false
+                    } else {
+                        addLog("路径不可写或无法创建，请重新输入", LogType.WARNING)
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showOutputDirTextDialog = false }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -1332,14 +1516,17 @@ private suspend fun processApk(
     autoVerify: Boolean
 ): ProcessResult = withContext(Dispatchers.IO) {
     val t0 = System.currentTimeMillis()
+    val stages = StageTracker(addLog)
     lateinit var outputFile: File
     var tempFile: File? = null
     try {
-        val outputDir = File(context.getExternalFilesDir(null), "ADFXCBNM")
+        val sourceApkPath = OutputSettings.resolveApkPath(context, apkUri)
+        val (outputDir, dirSource) = OutputSettings.getOutputDir(context, sourceApkPath)
         if (!outputDir.exists() && !outputDir.mkdirs()) {
-            addLog("无法创建输出目录", LogType.ERROR)
+            addLog("无法创建输出目录: ${outputDir.absolutePath}", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
+        addLog("输出目录($dirSource): ${outputDir.absolutePath}", LogType.INFO)
 
         val baseName = apkName.replace(".apk", "")
         val suffix = if (timestampedOutput) "_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}" else ""
@@ -1347,8 +1534,10 @@ private suspend fun processApk(
         tempFile = File(outputDir, "${baseName}_temp_${System.currentTimeMillis()}.apk")
 
         // Step 1: Stream APK to temp file (supports large APKs without OOM)
+        stages.begin("读取源APK")
         val inputStream = context.contentResolver.openInputStream(apkUri)
         if (inputStream == null) {
+            stages.end(LogType.ERROR, "无法读取")
             addLog("无法读取源APK文件", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
@@ -1364,9 +1553,11 @@ private suspend fun processApk(
             }
             inputStream.close()
         } catch (e: Exception) {
+            stages.end(LogType.ERROR, e.message)
             addLog("读取APK失败: ${e.message}", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
+        stages.end(LogType.SUCCESS, "${apkSize / 1024}KB")
         onProgress(0.05f)
         detailLog("APK大小: ${apkSize / 1024 / 1024}MB")
 
@@ -1405,6 +1596,7 @@ private suspend fun processApk(
         val allFeatures = hardening + protection
 
         // Step 4: Scan entries using ZipFile (random access, memory efficient)
+        stages.begin("分析源APK")
         val integrityHashes = mutableMapOf<String, String>()
         var dexCount = 0
         var soCount = 0
@@ -1431,6 +1623,7 @@ private suspend fun processApk(
         }
         onProgress(0.2f)
         detailLog("源APK: DEX=${dexCount}个, SO=${soCount}个, 条目=${existingEntries.size}个")
+        stages.end(LogType.SUCCESS, "DEX=${dexCount} SO=${soCount}")
 
         val manifestJson = buildProtectionJson(allFeatures, apkSize, integrityHashes)
         val configBytes = generateProtectionConfig(allFeatures)
@@ -1492,6 +1685,7 @@ private suspend fun processApk(
         // Create intermediate file for first pass output
         val intermediateFile = File(outputDir, "${baseName}_intermediate_${System.currentTimeMillis()}.apk")
 
+        stages.begin("注入加固资源")
         // First pass: copy all files with modifications from tempFile to intermediateFile
         ZipInputStream(FileInputStream(tempFile).buffered()).use { zis ->
             ZipOutputStream(BufferedOutputStream(FileOutputStream(intermediateFile), BUFFER_SIZE)).use { zos ->
@@ -1619,6 +1813,10 @@ private suspend fun processApk(
                 detailLog("  ✓ 配置: features.cfg (${enabledFeatures.size}项功能)")
                 detailLog("  ${if (certSha256.isNotEmpty()) "✓" else "✗"} 签名基线: ${certSha256.take(16)}...")
                 detailLog("  ✓ DEX CRC: ${dexCrcMap.size}个基线")
+                stages.end(
+                    LogType.SUCCESS,
+                    "清单${if (manifestModified) "✓" else "✗"} DEX=${injectedDexSize}字节 SO=${injectedAbis.joinToString(",").ifEmpty { "无" }}"
+                )
             }
         }
         onProgress(0.6f)
@@ -1627,6 +1825,7 @@ private suspend fun processApk(
             addLog("签名证书不可用，无法签名", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
+        stages.begin("签名")
         try {
             try {
                 Class.forName("com.android.apksig.ApkSigner")
@@ -1644,7 +1843,9 @@ private suspend fun processApk(
                 .build()
             apkSigner.sign()
             addLog("签名完成 (v1+v2)", LogType.SUCCESS)
+            stages.end(LogType.SUCCESS)
         } catch (signErr: Exception) {
+            stages.end(LogType.ERROR, signErr.message)
             addLog("签名失败: ${signErr.javaClass.simpleName}: ${signErr.message}", LogType.ERROR)
             signErr.stackTrace.take(5).forEach { addLog("  at ${it.className}.${it.methodName}:${it.lineNumber}", LogType.ERROR) }
             return@withContext ProcessResult(false, "", 0, "", 0f)
@@ -1662,14 +1863,21 @@ private suspend fun processApk(
             val mb = outputFile.length() / (1024f * 1024f)
             addLog("完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节", LogType.SUCCESS)
             if (autoVerify) {
-                addLog("开始自动校验...", LogType.INFO)
+                stages.begin("自动校验")
                 val (pass, total) = verifyHardenedApk(outputFile, detailLog)
-                if (pass == total) addLog("校验通过: $pass/$total", LogType.SUCCESS)
-                else addLog("校验异常: $pass/$total 通过", LogType.WARNING)
+                if (pass == total) {
+                    stages.end(LogType.SUCCESS, "$pass/$total")
+                    addLog("校验通过: $pass/$total", LogType.SUCCESS)
+                } else {
+                    stages.end(LogType.WARNING, "$pass/$total")
+                    addLog("校验异常: $pass/$total 通过", LogType.WARNING)
+                }
             }
+            stages.finish()
             ProcessResult(true, outputFile.absolutePath, outputFile.length(), diffStr, 1f)
         } else {
             addLog("输出文件不存在或为空", LogType.ERROR)
+            stages.finish()
             ProcessResult(false, "", 0, "", 0f)
         }
     } catch (e: Exception) {
@@ -1688,25 +1896,35 @@ private suspend fun processFrostShellApk(
     detailLog: (String) -> Unit,
     onProgress: (Float) -> Unit,
     timestampedOutput: Boolean,
-    autoVerify: Boolean
+    autoVerify: Boolean,
+    frostOptions: FrostEngineOptions
 ): ProcessResult = withContext(Dispatchers.IO) {
     val t0 = System.currentTimeMillis()
+    val stages = StageTracker(addLog)
     try {
+        stages.begin("引擎初始化")
         if (!FrostShellEngine.prepare(context)) {
+            stages.end(LogType.ERROR, "初始化失败")
             addLog("FrostShell 引擎初始化失败", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
-        val outputDir = File(context.getExternalFilesDir(null), "ADFXCBNM")
+        stages.end(LogType.SUCCESS)
+
+        val sourceApkPath = OutputSettings.resolveApkPath(context, apkUri)
+        val (outputDir, dirSource) = OutputSettings.getOutputDir(context, sourceApkPath)
         if (!outputDir.exists() && !outputDir.mkdirs()) {
-            addLog("无法创建输出目录", LogType.ERROR)
+            addLog("无法创建输出目录: ${outputDir.absolutePath}", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
+        addLog("输出目录($dirSource): ${outputDir.absolutePath}", LogType.INFO)
         val baseName = apkName.replace(".apk", "")
         val suffix = if (timestampedOutput) "_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}" else ""
         val outputFile = File(outputDir, "${baseName}_engine${suffix}.apk")
 
+        stages.begin("读取源APK")
         val inputStream = context.contentResolver.openInputStream(apkUri)
         if (inputStream == null) {
+            stages.end(LogType.ERROR, "无法读取")
             addLog("无法读取源APK文件", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
@@ -1721,10 +1939,17 @@ private suspend fun processFrostShellApk(
             }
             inputStream.close()
         } catch (e: Exception) {
+            stages.end(LogType.ERROR, e.message)
             addLog("读取APK失败: ${e.message}", LogType.ERROR)
             return@withContext ProcessResult(false, "", 0, "", 0f)
         }
+        stages.end(LogType.SUCCESS, "${inputFile.length() / 1024}KB")
+
         addLog("FrostShell 引擎启动: $apkName", LogType.INFO)
+        if (frostOptions.keepClasses) detailLog("启用: 保留部分类(keep-classes)")
+        if (frostOptions.smaller) detailLog("启用: 瘦身(smaller)")
+        if (frostOptions.verifySign) detailLog("启用: 运行时验签(verify-sign)")
+        frostOptions.excludedAbi?.let { detailLog("启用: 剔除ABI ${it.joinToString(",")}") }
         val engineLog = com.adfxcbnm.frostshell.util.FrostLogUtils.logListener
         com.adfxcbnm.frostshell.util.FrostLogUtils.logListener = { line ->
             addLog(line, LogType.INFO)
@@ -1733,10 +1958,17 @@ private suspend fun processFrostShellApk(
         var engineError: String? = null
         try {
             onProgress(0.3f)
-            outApk = FrostShellEngine.protectApk(inputFile.absolutePath, outputDir)
+            stages.begin("引擎加固")
+            outApk = FrostShellEngine.protectApk(inputFile.absolutePath, outputDir, frostOptions)
             onProgress(0.9f)
+            if (outApk != null) {
+                stages.end(LogType.SUCCESS, outApk.name)
+            } else {
+                stages.end(LogType.ERROR, "无输出")
+            }
         } catch (e: Exception) {
             engineError = e.message
+            stages.end(LogType.ERROR, e.message)
             addLog("引擎异常: ${e.javaClass.simpleName}: ${e.message}", LogType.ERROR)
             e.stackTrace.take(8).forEach { addLog("  at ${it.className}.${it.methodName}:${it.lineNumber}", LogType.ERROR) }
         } finally {
@@ -1750,9 +1982,11 @@ private suspend fun processFrostShellApk(
             val mb = outApk!!.length() / (1024f * 1024f)
             addLog("引擎完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节", LogType.SUCCESS)
             onProgress(1f)
+            stages.finish()
             ProcessResult(true, outApk!!.absolutePath, outApk!!.length(), diffStr, 1f)
         } else {
             addLog("引擎未生成有效输出 APK${if (engineError != null) ": $engineError" else ""}", LogType.ERROR)
+            stages.finish()
             ProcessResult(false, "", 0, "", 0f)
         }
     } catch (e: Exception) {
@@ -1955,7 +2189,7 @@ private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integr
 private fun generateProtectionConfig(allFeatures: List<String>): ByteArray {
     val featureMask = allFeatures.mapIndexed { idx, f -> (f.hashCode() and 0xFF).toLong() shl ((idx % 8) * 8) }.fold(0L) { acc, v -> acc or v }
     val config = ByteArray(128)
-    val magic = "ADFXCBNM_CFG_V9427".toByteArray()
+    val magic = "ADFXCBNM_CFG_V9500".toByteArray()
     System.arraycopy(magic, 0, config, 0, magic.size)
     config[16] = (allFeatures.size and 0xFF).toByte()
     for (i in 0 until 8) {

@@ -50,11 +50,17 @@ object FrostShellEngine {
         }
     }
 
-    fun protectApk(apkPath: String, outputDir: File): File {
+    fun protectApk(apkPath: String, outputDir: File, options: FrostEngineOptions = FrostEngineOptions()): File {
         val builder = FrostApk.Builder()
             .filePath(apkPath)
             .outputPath(outputDir.absolutePath)
             .sign(true)
+            .apply {
+                if (options.keepClasses) this.keepClasses(true)
+                if (options.smaller) this.smaller(true)
+                if (options.verifySign) this.verifySign(true)
+                if (!options.excludedAbi.isNullOrEmpty()) this.excludedAbi(options.excludedAbi)
+            }
         builder.build().protect()
         return findOutputApk(outputDir, apkPath)
     }
