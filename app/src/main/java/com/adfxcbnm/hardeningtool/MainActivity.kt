@@ -997,7 +997,12 @@ fun MainScreen() {
 
     if (showSettings) {
         ModalBottomSheet(onDismissRequest = { showSettings = false }) {
-            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
                 Text("设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(12.dp))
 

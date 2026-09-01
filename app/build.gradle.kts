@@ -10,7 +10,7 @@ android {
     ndkVersion = "25.1.8937393"
 
     defaultConfig {
-        applicationId = "com.adfxcbnm.hardeningtool"
+        applicationId = "Forinxy.safe"
         minSdk = 26
         targetSdk = 34
         versionCode = 30
