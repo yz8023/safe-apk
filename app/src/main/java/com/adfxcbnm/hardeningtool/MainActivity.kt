@@ -381,6 +381,80 @@ fun MainScreen() {
 
                 Spacer(Modifier.height(10.dp))
 
+                // 输出目录设置卡片
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = CircleShape,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text("输出目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text(
+                                text = outputDirCustom ?: "默认（跟随所选APK所在目录）",
+                                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilledTonalButton(
+                                onClick = { outputDirPickerLauncher.launch(null) },
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("选择目录", fontSize = 13.sp)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    outputDirTextInput = outputDirCustom ?: ""
+                                    showOutputDirTextDialog = true
+                                },
+                                modifier = Modifier.weight(1f).height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("手动输入", fontSize = 13.sp)
+                            }
+                            TextButton(
+                                onClick = {
+                                    OutputSettings.setCustomDir(context, null)
+                                    OutputSettings.setSafUri(context, null)
+                                    outputDirCustom = null
+                                    addLog("输出目录已恢复默认", LogType.INFO)
+                                },
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Text("恢复默认", fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
                 // Feature Sections
                 FeatureSection(
                     title = "加固",
