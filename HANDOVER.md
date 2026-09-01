@@ -209,8 +209,8 @@ GitHub 远程仓库：`https://github.com/yz8023/safe-apk.git`（本交接代码
 ## 13. Git 与发布
 
 - 仓库：`https://github.com/yz8023/safe-apk.git`，分支 `main`。
-- 版本标签：`v9.4.27`。
-- 当前提交哈希：`77c758a`（2026-09-01）。
+- 版本标签：`v9.4.27`（Release 与源码包以该标签为验收基准）。
+- 当前提交哈希：可通过 `git rev-parse --short HEAD` 获取，不在此硬编码以避免与版本快照漂移。
 - CI：`.github/workflows/build-apk.yml` 在 push 到 main 或手动触发时构建 debug APK 并上传 artifact。
 - 提交约定：功能改动用 `feat:`，修复用 `fix:`，文档用 `docs:`。
 
