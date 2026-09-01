@@ -1,8 +1,17 @@
-# ADFXCBNM Android Hardening Tool
+# safe-apk
 
-Android APK 加固工具，提供 15 项加固功能和 20 项保护功能。
+安卓 apk 加固
 
-## 功能
+本仓库包含以下子项目：
+
+## AndroidHardeningTool（Android 加固工具 App）
+
+Android APK 加固工具，提供 15 项加固功能和 20 项保护功能，内置 FrostShell 加固引擎（Kotlin 移植版）。
+
+- 应用名：Android加固工具
+- 包名：`com.adfxcbnm.hardeningtool`
+- 版本：9.4.27
+- 构建：`./gradlew :app:assembleDebug`（详见 `HANDOVER.md`）
 
 ### 加固功能 (15项)
 1. DEX加密加固 - AES-256-CBC 加密
@@ -43,7 +52,7 @@ Android APK 加固工具，提供 15 项加固功能和 20 项保护功能。
 34. 文件访问控制 - 权限检测
 35. 应用组件保护 - Manifest
 
-## 构建
+### 构建
 
 ```bash
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
@@ -51,9 +60,13 @@ export ANDROID_HOME=/opt/android-sdk
 ./gradlew assembleDebug
 ```
 
-## 输出
+### 输出
 
 加固后的 APK 保存到: `/storage/emulated/0/ADFXCBNM/`
+
+## FrostShell-CLI（命令行加固器）
+
+桌面 CLI 加固器（Python + Java），详见 `HANDOVER-FrostShell-CLI.md` 与 `FrostShell-CLI/` 目录。
 
 ## 联系方式
 

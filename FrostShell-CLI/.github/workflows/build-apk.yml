@@ -1,0 +1,68 @@
+name: Build APK
+
+# 触发方式：
+#   1. push 到 main / master 分支
+#   2. 手动触发：仓库 Actions 页面 -> Build APK -> Run workflow
+#   3. 创建指向 main / master 的 Pull Request
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch Android build tools (aapt2 + android.jar)
+        run: |
+          mkdir -p scripts/build
+          curl -sL -o scripts/build/aapt2.jar \
+            "https://maven.aliyun.com/repository/google/com/android/tools/build/aapt2/8.2.2-10154469/aapt2-8.2.2-10154469-linux.jar"
+          python3 -c "import zipfile; zipfile.ZipFile('scripts/build/aapt2.jar').extract('aapt2','scripts/build/')"
+          chmod +x scripts/build/aapt2
+          curl -sL -o scripts/build/android.jar \
+            "https://maven.aliyun.com/repository/central/com/google/android/android/4.1.1.4/android-4.1.1.4.jar"
+          ls -la scripts/build/
+
+      - name: Environment check
+        run: |
+          java -version
+          python3 --version
+          python3 scripts/protect.py --check
+
+      - name: Build test APK (aapt2 standard)
+        run: |
+          python3 scripts/make_test_apk.py build/
+
+      - name: Two-in-one hardening (FrostShell + ADFXCBNM)
+        run: |
+          python3 scripts/protect.py build/test_app.apk --plus -o out
+
+      - name: Verify signed APK
+        run: |
+          ls -la out/
+          java -cp engine/ironshell.jar com.android.apksigner.ApkSignerTool verify \
+            --min-sdk-version 26 out/*_plus_signed.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frostshell-plus-apk
+          path: out/*_plus_signed.apk
+          if-no-files-found: error

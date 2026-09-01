@@ -1,5 +1,35 @@
+# 构建产物
+build/
 app/build/
-app/.cxx/
-*.iml
+out/
+dist/
+*.apk
+
+# Gradle / IDE
 .gradle/
+app/.cxx/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# 签名与密钥
+*.jks
+*.keystore
+*.p12
+
+# 敏感信息
+.env
+*secret*
+*password*
+*token*
+
+# 本地配置
 local.properties
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地 JDK 下载缓存
+FrostShell-CLI/scripts/.jdk/
