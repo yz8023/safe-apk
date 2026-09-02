@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.5"
-private const val CONFIG_VERSION = "9.6.5"
+private const val APP_VERSION = "9.6.6"
+private const val CONFIG_VERSION = "9.6.6"
 
 
 
@@ -450,7 +450,7 @@ fun MainScreen() {
 
                 Spacer(Modifier.height(10.dp))
 
-                // 输出目录设置卡片
+                // 签名开关卡片
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -464,82 +464,50 @@ fun MainScreen() {
                                 modifier = Modifier.size(28.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
                                 }
                             }
                             Spacer(Modifier.width(8.dp))
-                            Text("输出目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text("加固后签名", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                         }
-                        Spacer(Modifier.height(10.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text(
-                                text = when {
-                                    outputToSource -> "源文件路径（所选APK所在目录）"
-                                    outputDirCustom != null -> outputDirCustom!!
-                                    else -> "默认（跟随所选APK所在目录）"
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(10.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth().clickable { toggleOutputToSource() },
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                signEnabled = !signEnabled
+                                prefs.edit().putBoolean("sign_enabled", signEnabled).apply()
+                                addLog(if (signEnabled) "签名已开启" else "签名已关闭，将输出未签名APK", LogType.INFO)
+                            },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("输出到源文件路径", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("加固产物自动签名", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    "将加固产物输出到所选APK所在目录",
+                                    "关闭后输出未签名APK，需自行签名",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Switch(
-                                checked = outputToSource,
-                                onCheckedChange = { toggleOutputToSource() }
+                                checked = signEnabled,
+                                onCheckedChange = {
+                                    signEnabled = it
+                                    prefs.edit().putBoolean("sign_enabled", it).apply()
+                                    addLog(if (it) "签名已开启" else "签名已关闭，将输出未签名APK", LogType.INFO)
+                                }
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilledTonalButton(
-                                onClick = { outputDirPickerLauncher.launch(null) },
-                                modifier = Modifier.weight(1f).height(36.dp),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("选择目录", fontSize = 13.sp)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    outputDirTextInput = outputDirCustom ?: ""
-                                    showOutputDirTextDialog = true
-                                },
-                                modifier = Modifier.weight(1f).height(36.dp),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("手动输入", fontSize = 13.sp)
-                            }
-                            TextButton(
-                                onClick = {
-                                    OutputSettings.setCustomDir(context, null)
-                                    OutputSettings.setSafUri(context, null)
-                                    outputDirCustom = null
-                                    addLog("输出目录已恢复默认", LogType.INFO)
-                                },
-                                modifier = Modifier.height(36.dp)
-                            ) {
-                                Text("恢复默认", fontSize = 13.sp)
-                            }
+                        if (signEnabled) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = if (signKeystorePath.isNotEmpty())
+                                    "自定义keystore: ${File(signKeystorePath).name}"
+                                else
+                                    "默认调试keystore (adh_debug.p12)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
@@ -1386,17 +1354,6 @@ fun MainScreen() {
                 Spacer(Modifier.height(16.dp))
                 Text("签名设置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
-                SettingRow(
-                    icon = Icons.Default.Lock,
-                    title = "加固后签名",
-                    subtitle = "关闭后输出未签名APK，需自行签名",
-                    checked = signEnabled,
-                    onCheckedChange = {
-                        signEnabled = it
-                        prefs.edit().putBoolean("sign_enabled", it).apply()
-                        addLog(if (it) "签名已开启" else "签名已关闭，将输出未签名APK", LogType.INFO)
-                    }
-                )
                 if (signEnabled) {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
