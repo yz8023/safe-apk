@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.3"
-private const val CONFIG_VERSION = "9.6.3"
+private const val APP_VERSION = "9.6.4"
+private const val CONFIG_VERSION = "9.6.4"
 
 
 
@@ -237,7 +237,13 @@ fun MainScreen() {
         if (enabled) {
             frostSoRandomization = false
             prefs.edit().putBoolean("frost_so_randomization", false).apply()
-            addLog("伪装加固已开启，壳SO随机化已自动关闭（互斥）", LogType.INFO)
+            if (frostDisguiseName.isBlank()) {
+                frostDisguiseName = "jiagu"
+                prefs.edit().putString("frost_disguise_name", "jiagu").apply()
+                addLog("伪装加固已开启，使用默认厂商指纹 jiagu(360加固)，壳SO随机化已关闭（互斥）", LogType.INFO)
+            } else {
+                addLog("伪装加固已开启，壳SO随机化已自动关闭（互斥）", LogType.INFO)
+            }
         }
         frostDisguiseEnabled = enabled
         prefs.edit().putBoolean("frost_disguise_enabled", enabled).apply()
@@ -1631,12 +1637,12 @@ fun MainScreen() {
             confirmButton = {
                 TextButton(onClick = {
                     val custom = disguiseCustomInput.trim()
-                    if (custom.isNotEmpty() && Regex("[A-Za-z0-9_]+").matches(custom)) {
+                    if (custom.isNotEmpty() && Regex("[A-Za-z0-9_-]+").matches(custom)) {
                         frostDisguiseName = custom
                         prefs.edit().putString("frost_disguise_name", custom).apply()
                         showDisguiseDialog = false
                     } else {
-                        addLog("自定义SO名称仅支持字母/数字/下划线", LogType.WARNING)
+                        addLog("自定义SO名称仅支持字母/数字/下划线/中划线", LogType.WARNING)
                     }
                 }) { Text("使用自定义") }
             },
@@ -2714,18 +2720,15 @@ private fun overlayProtectionLayer(
                 }
                 if (injectedAbis.isNotEmpty()) addLog("叠加注入: SO ${injectedAbis.joinToString(",")}", LogType.SUCCESS)
 
-                if (!disguiseSoName.isNullOrBlank() && Regex("[A-Za-z0-9_]+").matches(disguiseSoName)) {
+                if (!disguiseSoName.isNullOrBlank() && Regex("[A-Za-z0-9_-]+").matches(disguiseSoName.trim())) {
                     val abiAlias = mapOf("arm64-v8a" to "arm64", "armeabi-v7a" to "arm", "x86" to "x86", "x86_64" to "x86_64")
-                    val shellLibsRoot = File(com.adfxcbnm.frostshell.util.FrostFileUtils.getExecutablePath(), "shell-files/libs")
                     val disguiseAbis = mutableListOf<String>()
                     for (targetAbi in targetAbis) {
                         val disguiseEntryName = "lib/$targetAbi/lib$disguiseSoName.so"
                         if (existingEntries.contains(disguiseEntryName)) continue
                         val abiDirName = abiAlias[targetAbi] ?: targetAbi
-                        val realSo = File(shellLibsRoot, abiDirName).listFiles()
-                            ?.firstOrNull { it.isFile && it.name.endsWith(".so") } ?: continue
                         try {
-                            val soBytes = realSo.readBytes()
+                            val soBytes = context.assets.open("frostshell/libs/$abiDirName/lib${"8012d9ae47c7f010"}.so").use { it.readBytes() }
                             val soEntry = ZipEntry(disguiseEntryName).apply {
                                 method = ZipEntry.STORED
                                 size = soBytes.size.toLong()
@@ -2736,11 +2739,43 @@ private fun overlayProtectionLayer(
                             zos.write(soBytes)
                             zos.closeEntry()
                             disguiseAbis.add(targetAbi)
-                        } catch (e: Exception) { }
+                        } catch (e: Exception) {
+                            try {
+                                val shellLibsRoot = File(com.adfxcbnm.frostshell.util.FrostFileUtils.getExecutablePath(), "shell-files/libs")
+                                val realSo = File(shellLibsRoot, abiDirName).listFiles()
+                                    ?.firstOrNull { it.isFile && it.name.endsWith(".so") } ?: continue
+                                val soBytes = realSo.readBytes()
+                                val soEntry = ZipEntry(disguiseEntryName).apply {
+                                    method = ZipEntry.STORED
+                                    size = soBytes.size.toLong()
+                                    compressedSize = soBytes.size.toLong()
+                                    crc = CRC32().apply { update(soBytes) }.value
+                                }
+                                zos.putNextEntry(soEntry)
+                                zos.write(soBytes)
+                                zos.closeEntry()
+                                disguiseAbis.add(targetAbi)
+                            } catch (e2: Exception) { }
+                        }
                     }
                     if (disguiseAbis.isNotEmpty()) {
-                        addLog("伪装注入: lib$disguiseSoName.so → ${disguiseAbis.joinToString(",")}", LogType.SUCCESS)
+                        val signatureAssets = disguiseAssociateAssets(disguiseSoName)
+                        for (sigAsset in signatureAssets) {
+                            try {
+                                val sigData = context.assets.open("fingerprints/$sigAsset").use { it.readBytes() }
+                                if (sigData.isNotEmpty()) {
+                                    zos.putNextEntry(ZipEntry("assets/$sigAsset").apply { method = ZipEntry.STORED })
+                                    zos.write(sigData)
+                                    zos.closeEntry()
+                                }
+                            } catch (e: Exception) { }
+                        }
+                        addLog("伪装注入: lib$disguiseSoName.so → ${disguiseAbis.joinToString(",")}，指纹${signatureAssets.size}项", LogType.SUCCESS)
+                    } else {
+                        addLog("伪装注入: lib$disguiseSoName.so 未找到可用壳SO源", LogType.WARNING)
                     }
+                } else if (!disguiseSoName.isNullOrBlank()) {
+                    addLog("伪装注入失败: 名称\"$disguiseSoName\"含非法字符(仅字母数字_)", LogType.ERROR)
                 }
 
                 val featureConfig = buildFeatureConfig(enabledFeatures, certSha256, dexCrcMap)
@@ -2780,6 +2815,20 @@ private fun overlayProtectionLayer(
         e.stackTrace.take(5).forEach { addLog("  at ${it.className}.${it.methodName}:${it.lineNumber}", LogType.ERROR) }
         false
     }
+}
+
+private fun disguiseAssociateAssets(soName: String): List<String> {
+    val lower = soName.lowercase()
+    val envMarkers = linkedMapOf(
+        "jiagu" to listOf("vender_marker_360.bin", "market_cn.bin"),
+        "tup" to listOf("vender_marker_tencent.bin"),
+        "shell-super" to listOf("vender_marker_tencent.bin"),
+        "baiduprotect" to listOf("vender_marker_baidu.bin"),
+        "ijiami" to listOf("vender_marker_ijiami.bin"),
+        "SecShell" to listOf("vender_marker_bangcle.bin"),
+        "zhizhu" to listOf("vender_marker_baidu.bin")
+    )
+    return envMarkers[lower]?.let { it + "finger_marker.bin" } ?: listOf("finger_marker.bin")
 }
 
 private fun loadSigningKeyPair(
@@ -3026,7 +3075,10 @@ private val PROTECTION_FEATURE_MAP = mapOf(
     "文件访问控制" to "file_control",
     "应用组件保护" to "component_protect",
     "环境密钥检测" to "env_testkeys",
-    "SELinux检测" to "env_selinux"
+    "SELinux检测" to "env_selinux",
+    "USB调试检测" to "usb_debug_detect",
+    "无障碍劫持检测" to "accessibility_hack",
+    "模拟位置检测" to "mock_location"
 )
 
 private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integrityHashes: Map<String, String>): String {

@@ -51,18 +51,20 @@ python3 ../../scripts/merge_protection.py -f app_signed.apk -o out/ \
     --keystore my.jks --alias key0 --storepass 123456
 ```
 
-## 功能清单（26 项）
+## 功能清单（31 项）
 
 - **加固(6)**：签名校验 `sig_verify`、防调试检测 `anti_debug`、防 Hook 检测 `anti_hook`、
   防注入保护 `anti_inject`、防内存 Dump `anti_dump`、防代理检测 `anti_proxy`
-- **保护(20)**：完整性校验 `integrity`、运行时保护 `runtime_protect`、内存保护 `mem_protect`、
+- **保护(25)**：完整性校验 `integrity`、运行时保护 `runtime_protect`、内存保护 `mem_protect`、
   网络安全 `net_secure`、ROOT 检测 `root_detect`、模拟器检测 `emu_detect`、
   Xposed 检测 `xposed_detect`、Frida 检测 `frida_detect`、Magisk 检测 `magisk_detect`、
   调试器检测 `debugger_detect`、代码注入检测 `code_inject`、速度检测 `speed_check`、
   多开检测 `multi_instance`、SSL 证书校验 `ssl_pinning`、数据防泄漏 `data_leak`、
   日志保护 `log_protect`、应用签名校验 `app_sig`、WebView 安全 `webview_secure`、
   文件访问控制 `file_control`、应用组件保护 `component_protect`、
-  环境密钥检测 `env_testkeys`、SELinux 检测 `env_selinux`
+  环境密钥检测 `env_testkeys`、SELinux 检测 `env_selinux`、
+  USB 调试检测 `usb_debug_detect`、无障碍劫持检测 `accessibility_hack`、
+  模拟位置检测 `mock_location`
 
 ## 运行机制
 

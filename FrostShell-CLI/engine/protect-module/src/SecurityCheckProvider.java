@@ -84,6 +84,9 @@ public class SecurityCheckProvider extends ContentProvider {
         RESULT_TO_FEATURE.put(S.t(S.net_secure), S.t(S.net_secure));
         RESULT_TO_FEATURE.put(S.t(S.env_testkeys), S.t(S.env_testkeys));
         RESULT_TO_FEATURE.put(S.t(S.env_selinux), S.t(S.env_selinux));
+        RESULT_TO_FEATURE.put(S.t(S.usb_debug_detect), S.t(S.usb_debug_detect));
+        RESULT_TO_FEATURE.put(S.t(S.accessibility_hack), S.t(S.accessibility_hack));
+        RESULT_TO_FEATURE.put(S.t(S.mock_location), S.t(S.mock_location));
     }
 
     private static native boolean nativeSelfProtect(boolean checkFrida);
@@ -276,6 +279,9 @@ public class SecurityCheckProvider extends ContentProvider {
         put(S.t(S.net_secure), enabled.contains(S.t(S.net_secure)) && detectMitmCert(ctx));
         put(S.t(S.env_testkeys), enabled.contains(S.t(S.env_testkeys)) && detectTestKeys());
         put(S.t(S.env_selinux), enabled.contains(S.t(S.env_selinux)) && detectSelinuxPermissive());
+        put(S.t(S.usb_debug_detect), enabled.contains(S.t(S.usb_debug_detect)) && detectUsbDebug(ctx));
+        put(S.t(S.accessibility_hack), enabled.contains(S.t(S.accessibility_hack)) && detectAccessibilityHack(ctx));
+        put(S.t(S.mock_location), enabled.contains(S.t(S.mock_location)) && detectMockLocation(ctx));
     }
 
     private static void enforce(Context ctx) {
@@ -681,6 +687,54 @@ public class SecurityCheckProvider extends ContentProvider {
                     }
                 }
             }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private static boolean detectUsbDebug(Context ctx) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+                String adb = android.provider.Settings.Global.getString(ctx.getContentResolver(), S.t(S.adb_enabled));
+                return adb != null && adb.equals(S.t(S.i1));
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private static boolean detectAccessibilityHack(Context ctx) {
+        try {
+            String servicesStr = android.provider.Settings.Secure.getString(ctx.getContentResolver(), S.t(S.enabled_accessibility_services));
+            if (servicesStr == null || servicesStr.isEmpty()) return false;
+            int modCount = 0;
+            String imeStr = null;
+            try {
+                imeStr = android.provider.Settings.Secure.getString(ctx.getContentResolver(), S.t(S.default_input_method));
+            } catch (Throwable ignored) {}
+            for (String entry : servicesStr.split(":")) {
+                if (entry.trim().isEmpty()) continue;
+                String name = entry.trim();
+                boolean isSelf = false;
+                try {
+                    isSelf = name.contains(ctx.getPackageName());
+                } catch (Throwable ignored) {}
+                if (!isSelf) {
+                    boolean selfIme = imeStr != null && name.equals(imeStr);
+                    if (!selfIme) modCount++;
+                }
+            }
+            return modCount >= 2;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private static boolean detectMockLocation(Context ctx) {
+        try {
+            String s = android.provider.Settings.Secure.getString(ctx.getContentResolver(), S.t(S.allow_mock_location));
+            if (s != null && s.equals(S.t(S.i1))) return true;
+            try {
+                android.location.LocationManager lm = (android.location.LocationManager) ctx.getSystemService(Context.LOCATION_SERVICE);
+                if (lm != null && lm.isProviderEnabled(S.t(S.mock))) return true;
+            } catch (Throwable ignored) {}
         } catch (Throwable ignored) {}
         return false;
     }
