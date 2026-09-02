@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.0"
-private const val CONFIG_VERSION = "9.6.0"
+private const val APP_VERSION = "9.6.1"
+private const val CONFIG_VERSION = "9.6.1"
 
 
 
@@ -166,8 +166,7 @@ fun MainScreen() {
     var signStorePassInput by remember { mutableStateOf("") }
     var signKeyPassInput by remember { mutableStateOf("") }
 
-    var hardeningExpanded by remember { mutableStateOf(false) }
-    var protectionExpanded by remember { mutableStateOf(false) }
+    var frostDetailsExpanded by remember { mutableStateOf(false) }
 
     val hardeningItems = remember {
         listOf(
@@ -517,54 +516,102 @@ fun MainScreen() {
 
                 Spacer(Modifier.height(10.dp))
 
-                // Feature Sections
-                FeatureSection(
-                    title = "加固",
-                    subtitle = "",
-                    items = hardeningItems,
-                    expanded = hardeningExpanded,
-                    onToggle = { hardeningExpanded = !hardeningExpanded },
-                    accentColor = MaterialTheme.colorScheme.primary
-                )
-
-                Spacer(Modifier.height(8.dp))
-
-                FeatureSection(
-                    title = "保护",
-                    subtitle = "",
-                    items = protectionItems,
-                    expanded = protectionExpanded,
-                    onToggle = { protectionExpanded = !protectionExpanded },
-                    accentColor = MaterialTheme.colorScheme.tertiary
-                )
-
-                Spacer(Modifier.height(10.dp))
-
                 // FrostShell Engine Toggle
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Memory, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
-                        Spacer(Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("FrostShell 引擎", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                            Text("使用完整加固引擎（dex指令抽取+native加密+重新签名）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(
-                            checked = useFrostEngine,
-                            onCheckedChange = {
-                                useFrostEngine = it
-                                prefs.edit().putBoolean("use_frost_engine", it).apply()
-                                addLog(if (it) "已切换到 FrostShell 引擎模式" else "已切换到普通加固模式", LogType.INFO)
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Memory, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("FrostShell 引擎", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                Text("使用完整加固引擎（dex指令抽取+native加密+重新签名）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                        )
+                            Switch(
+                                checked = useFrostEngine,
+                                onCheckedChange = {
+                                    useFrostEngine = it
+                                    prefs.edit().putBoolean("use_frost_engine", it).apply()
+                                    addLog(if (it) "已切换到 FrostShell 引擎模式" else "已切换到普通加固模式", LogType.INFO)
+                                }
+                            )
+                        }
+                        Surface(
+                            color = Color.Transparent,
+                            onClick = { frostDetailsExpanded = !frostDetailsExpanded },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val totalSelected = (hardeningItems + protectionItems).count { it.isSelected }
+                                Text(
+                                    "FrostShell 加固细则 (${totalSelected}/${hardeningItems.size + protectionItems.size})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    if (frostDetailsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        AnimatedVisibility(visible = frostDetailsExpanded) {
+                            Column(
+                                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                            ) {
+                                Text("加固", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                hardeningItems.chunked(2).forEach { rowItems ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        rowItems.forEach { item ->
+                                            FeatureChip(
+                                                item = item,
+                                                modifier = Modifier.weight(1f),
+                                                accentColor = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        repeat(2 - rowItems.size) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                    Spacer(Modifier.height(3.dp))
+                                }
+                                Text("保护", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.padding(top = 6.dp))
+                                protectionItems.chunked(2).forEach { rowItems ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        rowItems.forEach { item ->
+                                            FeatureChip(
+                                                item = item,
+                                                modifier = Modifier.weight(1f),
+                                                accentColor = MaterialTheme.colorScheme.tertiary
+                                            )
+                                        }
+                                        repeat(2 - rowItems.size) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                    Spacer(Modifier.height(3.dp))
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1526,105 +1573,6 @@ private fun SettingRow(
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun FeatureSection(
-    title: String,
-    subtitle: String,
-    items: List<MutableFeatureItem>,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    accentColor: Color
-) {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp)
-    ) {
-        Column {
-            Surface(
-                color = Color.Transparent,
-                onClick = onToggle,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            color = accentColor.copy(alpha = 0.12f),
-                            shape = CircleShape,
-                            modifier = Modifier.size(30.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    if (title == "加固") Icons.Default.Shield else Icons.Default.Security,
-                                    contentDescription = null,
-                                    tint = accentColor,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                        if (subtitle.isNotEmpty()) {
-                            Spacer(Modifier.width(6.dp))
-                            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        val selectedCount = items.count { it.isSelected }
-                        if (selectedCount > 0) {
-                            Surface(
-                                color = accentColor.copy(alpha = 0.12f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    "$selectedCount",
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = accentColor,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                    Icon(
-                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-            AnimatedVisibility(visible = expanded) {
-                Column(
-                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-                ) {
-                    items.chunked(2).forEach { rowItems ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            rowItems.forEach { item ->
-                                FeatureChip(
-                                    item = item,
-                                    modifier = Modifier.weight(1f),
-                                    accentColor = accentColor
-                                )
-                            }
-                            repeat(2 - rowItems.size) {
-                                Spacer(modifier = Modifier.weight(1f))
-                            }
-                        }
-                        Spacer(Modifier.height(3.dp))
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -2811,7 +2759,7 @@ private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integr
 private fun generateProtectionConfig(allFeatures: List<String>): ByteArray {
     val featureMask = allFeatures.mapIndexed { idx, f -> (f.hashCode() and 0xFF).toLong() shl ((idx % 8) * 8) }.fold(0L) { acc, v -> acc or v }
     val config = ByteArray(128)
-    val magic = "ADFXCBNM_CFG_V9600".toByteArray()
+    val magic = "ADFXCBNM_CFG_V9601".toByteArray()
     System.arraycopy(magic, 0, config, 0, magic.size)
     config[16] = (allFeatures.size and 0xFF).toByte()
     for (i in 0 until 8) {
