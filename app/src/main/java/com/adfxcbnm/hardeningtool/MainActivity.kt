@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.1"
-private const val CONFIG_VERSION = "9.6.1"
+private const val APP_VERSION = "9.6.2"
+private const val CONFIG_VERSION = "9.6.2"
 
 
 
@@ -156,6 +156,10 @@ fun MainScreen() {
     var frostKeepClasses by remember { mutableStateOf(prefs.getBoolean("frost_keep_classes", false)) }
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
+    var frostSoRandomization by remember { mutableStateOf(prefs.getBoolean("frost_so_randomization", false)) }
+    var frostDisguiseEnabled by remember { mutableStateOf(prefs.getBoolean("frost_disguise_enabled", false)) }
+    var frostDisguiseName by remember { mutableStateOf(prefs.getString("frost_disguise_name", "") ?: "") }
+    var showDisguiseDialog by remember { mutableStateOf(false) }
     var frostExcludedAbi by remember {
         mutableStateOf(prefs.getStringSet("frost_excluded_abi", emptySet())?.toMutableSet() ?: mutableSetOf())
     }
@@ -644,6 +648,8 @@ fun MainScreen() {
                             keepClasses = frostKeepClasses,
                             smaller = frostSmaller,
                             verifySign = frostVerifySign,
+                            soRandomization = frostSoRandomization,
+                            disguiseSoName = if (frostDisguiseEnabled && frostDisguiseName.isNotBlank()) frostDisguiseName.trim() else null,
                             excludedAbi = if (frostExcludedAbi.isEmpty()) null else frostExcludedAbi.toList(),
                             signEnabled = signEnabled,
                             signKeystorePath = signKeystorePath.ifEmpty { null },
@@ -1348,6 +1354,37 @@ fun MainScreen() {
                         prefs.edit().putBoolean("frost_verify_sign", it).apply()
                     }
                 )
+                SettingRow(
+                    icon = Icons.Default.Casino,
+                    title = "壳SO随机化",
+                    subtitle = "每次加固随机化壳SO名称，防特征识别",
+                    checked = frostSoRandomization,
+                    onCheckedChange = {
+                        frostSoRandomization = it
+                        prefs.edit().putBoolean("frost_so_randomization", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.VisibilityOff,
+                    title = "伪装加固",
+                    subtitle = "注入厂商特征SO，伪装为知名加固方案",
+                    checked = frostDisguiseEnabled,
+                    onCheckedChange = {
+                        frostDisguiseEnabled = it
+                        prefs.edit().putBoolean("frost_disguise_enabled", it).apply()
+                    }
+                )
+                if (frostDisguiseEnabled) {
+                    SettingRow(
+                        icon = Icons.Default.List,
+                        title = "伪装SO名称",
+                        subtitle = if (frostDisguiseName.isBlank()) "未选择，点击选择厂商预设或自定义" else "lib$frostDisguiseName.so",
+                        checked = false,
+                        onCheckedChange = {},
+                        showSwitch = false,
+                        onClick = { showDisguiseDialog = true }
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Text("剔除 ABI（未勾选的将保留）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -1550,6 +1587,96 @@ fun MainScreen() {
             }
         )
     }
+
+    if (showDisguiseDialog) {
+        val disguisePresets = remember {
+            try {
+                val json = context.assets.open("so_name_presets.json").bufferedReader().use { it.readText() }
+                val arr = org.json.JSONArray(json)
+                (0 until arr.length()).map { i ->
+                    val obj = arr.getJSONObject(i)
+                    Triple(obj.getString("title"), obj.getString("name"), obj.getString("category"))
+                }
+            } catch (e: Exception) { emptyList() }
+        }
+        var disguiseCustomInput by remember { mutableStateOf(frostDisguiseName) }
+        AlertDialog(
+            onDismissRequest = { showDisguiseDialog = false },
+            title = { Text("伪装SO名称") },
+            text = {
+                Column {
+                    Text(
+                        "选择厂商预设（伪装为对应加固方案），或在底部输入自定义名称。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val grouped = disguisePresets.groupBy { it.third }
+                    LazyColumn(modifier = Modifier.fillMaxWidth().height(320.dp)) {
+                        grouped.forEach { (category, presets) ->
+                            item(key = "cat_$category") {
+                                Text(
+                                    category,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(presets.size, key = { idx -> "${category}_$idx" }) { idx ->
+                                val (title, name, _) = presets[idx]
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            frostDisguiseName = name
+                                            prefs.edit().putString("frost_disguise_name", name).apply()
+                                            showDisguiseDialog = false
+                                        }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(selected = frostDisguiseName == name, onClick = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(title, style = MaterialTheme.typography.bodyMedium)
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        "lib$name.so",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = disguiseCustomInput,
+                        onValueChange = { disguiseCustomInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("自定义名称") },
+                        placeholder = { Text("例如 myshell") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val custom = disguiseCustomInput.trim()
+                    if (custom.isNotEmpty() && Regex("[A-Za-z0-9_]+").matches(custom)) {
+                        frostDisguiseName = custom
+                        prefs.edit().putString("frost_disguise_name", custom).apply()
+                        showDisguiseDialog = false
+                    } else {
+                        addLog("自定义SO名称仅支持字母/数字/下划线", LogType.WARNING)
+                    }
+                }) { Text("使用自定义") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDisguiseDialog = false }) { Text("关闭") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1558,12 +1685,15 @@ private fun SettingRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    showSwitch: Boolean = true,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
+            .padding(vertical = 8.dp)
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
@@ -1572,7 +1702,9 @@ private fun SettingRow(
             Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        if (showSwitch) {
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
     }
 }
 
@@ -2216,7 +2348,18 @@ private suspend fun processFrostShellApk(
         if (frostOptions.keepClasses) detailLog("启用: 保留部分类(keep-classes)")
         if (frostOptions.smaller) detailLog("启用: 瘦身(smaller)")
         if (frostOptions.verifySign) detailLog("启用: 运行时验签(verify-sign)")
+        if (frostOptions.soRandomization) detailLog("启用: 壳SO随机化")
+        frostOptions.disguiseSoName?.let { detailLog("启用: 伪装加固(lib$it.so)") }
         frostOptions.excludedAbi?.let { detailLog("启用: 剔除ABI ${it.joinToString(",")}") }
+        if (frostOptions.soRandomization) {
+            val randResult = SoNameRandomizer.randomize(File(context.filesDir, "shell-files"))
+            if (randResult.renamed.isNotEmpty() && randResult.errors.isEmpty()) {
+                detailLog("壳SO随机化: " + randResult.renamed.entries.joinToString(",") { "lib${it.key}.so→lib${it.value}.so" })
+                addLog("壳SO随机化完成 (${randResult.renamed.size}个名称)", LogType.SUCCESS)
+            } else if (randResult.errors.isNotEmpty()) {
+                addLog("壳SO随机化失败: ${randResult.errors.joinToString(";")}", LogType.WARNING)
+            }
+        }
         val engineLog = com.adfxcbnm.frostshell.util.FrostLogUtils.logListener
         com.adfxcbnm.frostshell.util.FrostLogUtils.logListener = { line ->
             addLog(line, LogType.INFO)
@@ -2255,6 +2398,7 @@ private suspend fun processFrostShellApk(
                 signAlias = frostOptions.signAlias,
                 signStorePass = frostOptions.signStorePass,
                 signKeyPass = frostOptions.signKeyPass,
+                disguiseSoName = frostOptions.disguiseSoName,
                 addLog = addLog,
                 detailLog = detailLog,
                 onProgress = { p -> onProgress(0.9f + 0.1f * p) }
@@ -2295,6 +2439,7 @@ private fun overlayProtectionLayer(
     signAlias: String?,
     signStorePass: String?,
     signKeyPass: String?,
+    disguiseSoName: String?,
     addLog: (String, LogType) -> Unit,
     detailLog: (String) -> Unit,
     onProgress: (Float) -> Unit
@@ -2462,6 +2607,35 @@ private fun overlayProtectionLayer(
                     } catch (e: Exception) { }
                 }
                 if (injectedAbis.isNotEmpty()) addLog("叠加注入: SO ${injectedAbis.joinToString(",")}", LogType.SUCCESS)
+
+                if (!disguiseSoName.isNullOrBlank() && Regex("[A-Za-z0-9_]+").matches(disguiseSoName)) {
+                    val abiAlias = mapOf("arm64-v8a" to "arm64", "armeabi-v7a" to "arm", "x86" to "x86", "x86_64" to "x86_64")
+                    val shellLibsRoot = File(com.adfxcbnm.frostshell.util.FrostFileUtils.getExecutablePath(), "shell-files/libs")
+                    val disguiseAbis = mutableListOf<String>()
+                    for (targetAbi in targetAbis) {
+                        val disguiseEntryName = "lib/$targetAbi/lib$disguiseSoName.so"
+                        if (existingEntries.contains(disguiseEntryName)) continue
+                        val abiDirName = abiAlias[targetAbi] ?: targetAbi
+                        val realSo = File(shellLibsRoot, abiDirName).listFiles()
+                            ?.firstOrNull { it.isFile && it.name.endsWith(".so") } ?: continue
+                        try {
+                            val soBytes = realSo.readBytes()
+                            val soEntry = ZipEntry(disguiseEntryName).apply {
+                                method = ZipEntry.STORED
+                                size = soBytes.size.toLong()
+                                compressedSize = soBytes.size.toLong()
+                                crc = CRC32().apply { update(soBytes) }.value
+                            }
+                            zos.putNextEntry(soEntry)
+                            zos.write(soBytes)
+                            zos.closeEntry()
+                            disguiseAbis.add(targetAbi)
+                        } catch (e: Exception) { }
+                    }
+                    if (disguiseAbis.isNotEmpty()) {
+                        addLog("伪装注入: lib$disguiseSoName.so → ${disguiseAbis.joinToString(",")}", LogType.SUCCESS)
+                    }
+                }
 
                 val featureConfig = buildFeatureConfig(enabledFeatures, certSha256, dexCrcMap)
                 zos.putNextEntry(ZipEntry("assets/features.cfg").apply { method = ZipEntry.DEFLATED })
@@ -2759,7 +2933,7 @@ private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integr
 private fun generateProtectionConfig(allFeatures: List<String>): ByteArray {
     val featureMask = allFeatures.mapIndexed { idx, f -> (f.hashCode() and 0xFF).toLong() shl ((idx % 8) * 8) }.fold(0L) { acc, v -> acc or v }
     val config = ByteArray(128)
-    val magic = "ADFXCBNM_CFG_V9601".toByteArray()
+    val magic = "ADFXCBNM_CFG_V9602".toByteArray()
     System.arraycopy(magic, 0, config, 0, magic.size)
     config[16] = (allFeatures.size and 0xFF).toByte()
     for (i in 0 until 8) {
