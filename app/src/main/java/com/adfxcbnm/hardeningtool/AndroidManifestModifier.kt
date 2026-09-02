@@ -78,6 +78,7 @@ object AndroidManifestModifier {
 
             val stringPoolResult = readStringPool(r, log)
             val stringPool = stringPoolResult.strings
+            val originalStringPool = stringPool.toList()
             val originalUtf8 = stringPoolResult.isUtf8
             if (stringPool.isEmpty()) { log?.invoke("string pool empty"); return ModResult(orig, false) }
 
@@ -122,7 +123,7 @@ object AndroidManifestModifier {
             val out = ByteArrayOutputStream()
             writeStringPool(out, stringPool, originalUtf8)
             val resourceIds = allChunks.filterIsInstance<Chunk.ResourceIds>().flatMap { it.ids }
-            writeResourceIds(out, resourceIds)
+            writeResourceIds(out, stringPool, resourceIds, originalStringPool)
             writeContent(out, namespaces, elements, stringPool)
 
             val payload = out.toByteArray()
@@ -411,14 +412,62 @@ object AndroidManifestModifier {
         out.write(stringData.toByteArray())
     }
 
-    private fun writeResourceIds(out: ByteArrayOutputStream, ids: List<Int>) {
-        if (ids.isEmpty()) return
+    private fun writeResourceIds(
+        out: ByteArrayOutputStream,
+        strings: List<String>,
+        originalIds: List<Int>,
+        originalStrings: List<String>
+    ) {
+        if (strings.isEmpty()) return
+        val nameToId = HashMap<String, Int>(strings.size * 2)
+        val limit = minOf(originalIds.size, originalStrings.size)
+        for (i in 0 until limit) {
+            val id = originalIds[i]
+            if (id != 0) nameToId[originalStrings[i]] = id
+        }
+        for ((name, id) in KNOWN_ANDROID_ATTR_IDS) {
+            if (!nameToId.containsKey(name)) nameToId[name] = id
+        }
+        val ids = IntArray(strings.size)
+        for (i in strings.indices) {
+            ids[i] = nameToId[strings[i]] ?: 0
+        }
         val chunkSize = 8 + ids.size * 4
         out.write(s2b(RES_XML_RESOURCE_ID_TYPE.toShort()))
         out.write(s2b(8))
         out.write(i2b(chunkSize))
         for (id in ids) out.write(i2b(id))
     }
+
+    private val KNOWN_ANDROID_ATTR_IDS = mapOf(
+        "theme" to 0x01010000,
+        "label" to 0x01010001,
+        "icon" to 0x01010002,
+        "name" to 0x01010003,
+        "permission" to 0x01010006,
+        "protectionLevel" to 0x01010009,
+        "enabled" to 0x0101000e,
+        "debuggable" to 0x0101000f,
+        "exported" to 0x01010010,
+        "process" to 0x01010011,
+        "authorities" to 0x01010018,
+        "grantUriPermissions" to 0x0101001b,
+        "value" to 0x01010024,
+        "resource" to 0x01010025,
+        "minSdkVersion" to 0x0101020c,
+        "versionCode" to 0x0101021b,
+        "versionName" to 0x0101021c,
+        "windowSoftInputMode" to 0x0101022b,
+        "targetSdkVersion" to 0x01010270,
+        "allowBackup" to 0x01010280,
+        "largeHeap" to 0x0101035a,
+        "supportsRtl" to 0x010103af,
+        "extractNativeLibs" to 0x010104ea,
+        "directBootAware" to 0x01010505,
+        "compileSdkVersion" to 0x01010572,
+        "compileSdkVersionCodename" to 0x01010573,
+        "appComponentFactory" to 0x0101057a
+    )
 
     private fun writeContent(
         out: ByteArrayOutputStream,
