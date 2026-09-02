@@ -52,7 +52,6 @@ object FrostShellEngine {
     }
 
     fun protectApk(apkPath: String, outputDir: File, options: FrostEngineOptions = FrostEngineOptions()): File {
-        com.adfxcbnm.frostshell.util.FrostLogUtils.setOpenNoisyLog(options.noisyLog)
         if (!options.signEnabled) {
             FrostShellConfig.getInstance().setSignatureConfig(null)
         } else if (!options.signKeystorePath.isNullOrBlank()) {

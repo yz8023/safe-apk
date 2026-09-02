@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.2"
-private const val CONFIG_VERSION = "9.6.2"
+private const val APP_VERSION = "9.6.1"
+private const val CONFIG_VERSION = "9.6.1"
 
 
 
@@ -156,7 +156,6 @@ fun MainScreen() {
     var frostKeepClasses by remember { mutableStateOf(prefs.getBoolean("frost_keep_classes", false)) }
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
-    var frostNoisyLog by remember { mutableStateOf(prefs.getBoolean("frost_noisy_log", false)) }
     var frostExcludedAbi by remember {
         mutableStateOf(prefs.getStringSet("frost_excluded_abi", emptySet())?.toMutableSet() ?: mutableSetOf())
     }
@@ -645,7 +644,6 @@ fun MainScreen() {
                             keepClasses = frostKeepClasses,
                             smaller = frostSmaller,
                             verifySign = frostVerifySign,
-                            noisyLog = frostNoisyLog,
                             excludedAbi = if (frostExcludedAbi.isEmpty()) null else frostExcludedAbi.toList(),
                             signEnabled = signEnabled,
                             signKeystorePath = signKeystorePath.ifEmpty { null },
@@ -1348,16 +1346,6 @@ fun MainScreen() {
                     onCheckedChange = {
                         frostVerifySign = it
                         prefs.edit().putBoolean("frost_verify_sign", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Article,
-                    title = "详细日志",
-                    subtitle = "输出引擎详细日志 (noisy-log)",
-                    checked = frostNoisyLog,
-                    onCheckedChange = {
-                        frostNoisyLog = it
-                        prefs.edit().putBoolean("frost_noisy_log", it).apply()
                     }
                 )
                 Spacer(Modifier.height(8.dp))
@@ -2228,7 +2216,6 @@ private suspend fun processFrostShellApk(
         if (frostOptions.keepClasses) detailLog("启用: 保留部分类(keep-classes)")
         if (frostOptions.smaller) detailLog("启用: 瘦身(smaller)")
         if (frostOptions.verifySign) detailLog("启用: 运行时验签(verify-sign)")
-        if (frostOptions.noisyLog) detailLog("启用: 详细日志(noisy-log)")
         frostOptions.excludedAbi?.let { detailLog("启用: 剔除ABI ${it.joinToString(",")}") }
         val engineLog = com.adfxcbnm.frostshell.util.FrostLogUtils.logListener
         com.adfxcbnm.frostshell.util.FrostLogUtils.logListener = { line ->
@@ -2772,7 +2759,7 @@ private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integr
 private fun generateProtectionConfig(allFeatures: List<String>): ByteArray {
     val featureMask = allFeatures.mapIndexed { idx, f -> (f.hashCode() and 0xFF).toLong() shl ((idx % 8) * 8) }.fold(0L) { acc, v -> acc or v }
     val config = ByteArray(128)
-    val magic = "ADFXCBNM_CFG_V9602".toByteArray()
+    val magic = "ADFXCBNM_CFG_V9601".toByteArray()
     System.arraycopy(magic, 0, config, 0, magic.size)
     config[16] = (allFeatures.size and 0xFF).toByte()
     for (i in 0 until 8) {

@@ -4,7 +4,6 @@ data class FrostEngineOptions(
     val keepClasses: Boolean = false,
     val smaller: Boolean = false,
     val verifySign: Boolean = false,
-    val noisyLog: Boolean = false,
     val excludedAbi: List<String>? = null,
     val signEnabled: Boolean = true,
     val signKeystorePath: String? = null,
