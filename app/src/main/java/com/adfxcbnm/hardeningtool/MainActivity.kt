@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.5.0"
-private const val CONFIG_VERSION = "9.5.0"
+private const val APP_VERSION = "9.6.0"
+private const val CONFIG_VERSION = "9.6.0"
 
 
 
@@ -1974,40 +1974,7 @@ private suspend fun processApk(
 
          val entriesToAdd = linkedSetOf(manifestName, configName, "assets/features.cfg")
 
-        // 功能映射表 - 只保留真实有效的检测功能
-        val featureMap = mapOf(
-            // 加固（6项）
-            "签名校验" to "sig_verify",
-            "防调试检测" to "anti_debug",
-            "防Hook检测" to "anti_hook",
-            "防注入保护" to "anti_inject",
-            "防内存Dump" to "anti_dump",
-            "防代理检测" to "anti_proxy",
-            // 保护（20项）
-            "完整性校验" to "integrity",
-            "运行时保护" to "runtime_protect",
-            "内存保护" to "mem_protect",
-            "网络安全" to "net_secure",
-            "ROOT检测" to "root_detect",
-            "模拟器检测" to "emu_detect",
-            "Xposed检测" to "xposed_detect",
-            "Frida检测" to "frida_detect",
-            "Magisk检测" to "magisk_detect",
-            "调试器检测" to "debugger_detect",
-            "代码注入检测" to "code_inject",
-            "速度检测" to "speed_check",
-            "多开检测" to "multi_instance",
-            "SSL证书校验" to "ssl_pinning",
-            "数据防泄漏" to "data_leak",
-            "日志保护" to "log_protect",
-            "应用签名校验" to "app_sig",
-            "WebView安全" to "webview_secure",
-            "文件访问控制" to "file_control",
-            "应用组件保护" to "component_protect",
-            "环境密钥检测" to "env_testkeys",
-            "SELinux检测" to "env_selinux"
-        )
-        val enabledFeatures = allFeatures.mapNotNull { featureMap[it] }
+        val enabledFeatures = allFeatures.mapNotNull { PROTECTION_FEATURE_MAP[it] }
         detailLog("═══ 已选功能: ${enabledFeatures.size}项 ═══")
         detailLog("── 加固 ──")
         hardening.forEach { detailLog("  ✓ $it") }
@@ -2326,16 +2293,38 @@ private suspend fun processFrostShellApk(
         } finally {
             com.adfxcbnm.frostshell.util.FrostLogUtils.logListener = engineLog
         }
+        val sourceInputSize = inputFile.length()
         inputFile.delete()
         if (outApk != null && outApk!!.exists() && outApk!!.length() > 0) {
-            val sizeDiff = outApk!!.length() - inputFile.length()
+            val overlayOk = overlayProtectionLayer(
+                context = context,
+                inputFile = outApk!!,
+                outputFile = outputFile,
+                hardening = hardening,
+                protection = protection,
+                signEnabled = frostOptions.signEnabled,
+                signKeystorePath = frostOptions.signKeystorePath,
+                signAlias = frostOptions.signAlias,
+                signStorePass = frostOptions.signStorePass,
+                signKeyPass = frostOptions.signKeyPass,
+                addLog = addLog,
+                detailLog = detailLog,
+                onProgress = { p -> onProgress(0.9f + 0.1f * p) }
+            )
+            outApk!!.delete()
+            if (!overlayOk || !outputFile.exists() || outputFile.length() <= 0) {
+                addLog("叠加保护层未生成有效输出 APK", LogType.ERROR)
+                stages.finish()
+                return@withContext ProcessResult(false, "", 0, "", 0f)
+            }
+            val sizeDiff = outputFile.length() - sourceInputSize
             val diffStr = if (sizeDiff >= 0) "+$sizeDiff" else "$sizeDiff"
             val elapsed = System.currentTimeMillis() - t0
-            val mb = outApk!!.length() / (1024f * 1024f)
+            val mb = outputFile.length() / (1024f * 1024f)
             addLog("引擎完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节", LogType.SUCCESS)
             onProgress(1f)
             stages.finish()
-            ProcessResult(true, outApk!!.absolutePath, outApk!!.length(), diffStr, 1f)
+            ProcessResult(true, outputFile.absolutePath, outputFile.length(), diffStr, 1f)
         } else {
             addLog("引擎未生成有效输出 APK${if (engineError != null) ": $engineError" else ""}", LogType.ERROR)
             stages.finish()
@@ -2344,6 +2333,224 @@ private suspend fun processFrostShellApk(
     } catch (e: Exception) {
         addLog("FrostShell 引擎处理失败: ${e.message}", LogType.ERROR)
         ProcessResult(false, "", 0, "", 0f)
+    }
+}
+
+private fun overlayProtectionLayer(
+    context: Context,
+    inputFile: File,
+    outputFile: File,
+    hardening: List<String>,
+    protection: List<String>,
+    signEnabled: Boolean,
+    signKeystorePath: String?,
+    signAlias: String?,
+    signStorePass: String?,
+    signKeyPass: String?,
+    addLog: (String, LogType) -> Unit,
+    detailLog: (String) -> Unit,
+    onProgress: (Float) -> Unit
+): Boolean {
+    return try {
+        val allFeatures = hardening + protection
+        val enabledFeatures = allFeatures.mapNotNull { PROTECTION_FEATURE_MAP[it] }
+        detailLog("叠加细则: ${enabledFeatures.size}项 → ${enabledFeatures.joinToString(",")}")
+
+        // Resolve signature for features.cfg baseline
+        var certSha256 = ""
+        var signKey: PrivateKey? = null
+        var signCert: X509Certificate? = null
+        if (signEnabled) {
+            try {
+                if (!signKeystorePath.isNullOrBlank()) {
+                    val customKsFile = File(signKeystorePath)
+                    if (customKsFile.exists()) {
+                        val storePass = signStorePass?.toCharArray() ?: "android".toCharArray()
+                        val keyPass = signKeyPass?.toCharArray() ?: storePass
+                        val pair = loadSigningKeyPair(customKsFile, signAlias, storePass, keyPass)
+                        if (pair != null) {
+                            signKey = pair.first
+                            signCert = pair.second
+                        } else {
+                            addLog("自定义keystore解码失败(支持 p12/pfx/jks/keystore/bks)，回退默认签名", LogType.WARNING)
+                        }
+                    }
+                }
+                if (signKey == null) {
+                    val keystoreFile = File(context.filesDir, "adh_debug.p12")
+                    if (!keystoreFile.exists()) generateDebugKeystore(keystoreFile, addLog)
+                    val keyStore = java.security.KeyStore.getInstance("PKCS12")
+                    FileInputStream(keystoreFile).use { fis -> keyStore.load(fis, "android".toCharArray()) }
+                    val alias0 = keyStore.aliases().nextElement()
+                    signKey = keyStore.getKey(alias0, "android".toCharArray()) as PrivateKey
+                    signCert = keyStore.getCertificate(alias0) as X509Certificate
+                }
+                certSha256 = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(signCert!!.encoded)
+                    .joinToString("") { "%02x".format(it) }
+            } catch (e: Exception) {
+                addLog("读取签名证书失败，跳过签名基线: ${e.message}", LogType.WARNING)
+            }
+        }
+
+        val targetPkg = try {
+            context.packageManager.getPackageArchiveInfo(inputFile.absolutePath, 0)?.packageName ?: ""
+        } catch (e: Exception) { "" }
+        detailLog("目标包名: ${targetPkg.ifEmpty { "未知" }}")
+
+        // Scan existing entries
+        val integrityHashes = mutableMapOf<String, String>()
+        val existingEntries = mutableSetOf<String>()
+        ZipFile(inputFile).use { zip ->
+            val entries = zip.entries()
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                existingEntries.add(entry.name)
+                if (!entry.isDirectory && (entry.name.endsWith(".dex") || entry.name == "AndroidManifest.xml")) {
+                    val md = MessageDigest.getInstance("SHA-256")
+                    zip.getInputStream(entry).use { ins ->
+                        val buf = ByteArray(65536)
+                        var n: Int
+                        while (ins.read(buf).also { n = it } > 0) md.update(buf, 0, n)
+                    }
+                    integrityHashes[entry.name] = md.digest().joinToString("") { "%02x".format(it) }
+                }
+            }
+        }
+        val dexCrcMap = linkedMapOf<String, Long>()
+
+        val manifestJson = buildProtectionJson(allFeatures, inputFile.length(), integrityHashes)
+        val configBytes = generateProtectionConfig(allFeatures)
+
+        var manifestName = "assets/protection_manifest.json"
+        var manifestSuffix = 1
+        while (existingEntries.contains(manifestName)) { manifestName = "assets/protection_manifest_$manifestSuffix.json"; manifestSuffix++ }
+        var configName = "assets/protection_config.dat"
+        var configSuffix = 1
+        while (existingEntries.contains(configName)) { configName = "assets/protection_config_$configSuffix.dat"; configSuffix++ }
+
+        val entriesToAdd = linkedSetOf(manifestName, configName, "assets/features.cfg")
+
+        var manifestModified = false
+        val intermediateFile = File(outputFile.parentFile, "${outputFile.nameWithoutExtension}_intermediate.apk")
+        ZipInputStream(FileInputStream(inputFile).buffered()).use { zis ->
+            ZipOutputStream(BufferedOutputStream(FileOutputStream(intermediateFile), 65536)).use { zos ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val name = entry.name
+                    if (name.isNotEmpty() && !entriesToAdd.contains(name)) {
+                        if (name == "AndroidManifest.xml") {
+                            val data = zis.readBytes()
+                            val modResult = AndroidManifestModifier.modifyManifest(data, context, enabledFeatures, targetPkg)
+                            manifestModified = modResult.modified
+                            if (manifestModified) {
+                                val authority = "com.adfxcbnm.authority" + if (targetPkg.isNotEmpty()) ".$targetPkg" else ""
+                                addLog("叠加注入: SecurityCheckProvider authority=$authority", LogType.SUCCESS)
+                            } else {
+                                addLog("叠加注入: 清单未修改(可能已注入)", LogType.WARNING)
+                            }
+                            val newEntry = ZipEntry(name)
+                            newEntry.method = ZipEntry.DEFLATED
+                            zos.putNextEntry(newEntry)
+                            zos.write(modResult.data)
+                            zos.closeEntry()
+                        } else {
+                            val crc = streamCopyZipEntry(zis, zos, entry, name)
+                            if (Regex("classes\\d*\\.dex").matches(name)) dexCrcMap[name] = crc
+                        }
+                    }
+                    entry = zis.nextEntry
+                }
+
+                zos.putNextEntry(ZipEntry(manifestName).apply { method = ZipEntry.DEFLATED })
+                zos.write(manifestJson.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+                zos.putNextEntry(ZipEntry(configName).apply { method = ZipEntry.DEFLATED })
+                zos.write(configBytes)
+                zos.closeEntry()
+
+                var injectedDexSize = 0
+                try {
+                    val dexBytes = context.assets.open("security_check.dex").use { it.readBytes() }
+                    if (dexBytes.isNotEmpty()) {
+                        var secDexName = "classes2.dex"
+                        var secDexSuffix = 2
+                        while (existingEntries.contains(secDexName)) {
+                            secDexName = "classes${secDexSuffix}.dex"
+                            secDexSuffix++
+                        }
+                        zos.putNextEntry(ZipEntry(secDexName).apply { method = ZipEntry.DEFLATED })
+                        zos.write(dexBytes)
+                        zos.closeEntry()
+                        dexCrcMap[secDexName] = CRC32().apply { update(dexBytes) }.value
+                        injectedDexSize = dexBytes.size
+                        addLog("叠加注入: DEX $secDexName (${dexBytes.size}字节)", LogType.SUCCESS)
+                    }
+                } catch (e: Exception) {
+                    addLog("叠加注入: DEX异常 ${e.message}", LogType.WARNING)
+                }
+
+                val deviceAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+                val targetAbis = listOf(deviceAbi, "arm64-v8a", "armeabi-v7a", "x86", "x86_64").distinct()
+                val injectedAbis = mutableListOf<String>()
+                for (targetAbi in targetAbis) {
+                    try {
+                        val soBytes = context.assets.open("lib/$targetAbi/libsecurity_check.so").use { it.readBytes() }
+                        if (soBytes.isNotEmpty()) {
+                            val targetName = "lib/$targetAbi/libsecurity_check.so"
+                            if (!existingEntries.contains(targetName)) {
+                                val soEntry = ZipEntry(targetName).apply {
+                                    method = ZipEntry.STORED
+                                    size = soBytes.size.toLong()
+                                    compressedSize = soBytes.size.toLong()
+                                    crc = CRC32().apply { update(soBytes) }.value
+                                }
+                                zos.putNextEntry(soEntry)
+                                zos.write(soBytes)
+                                zos.closeEntry()
+                                injectedAbis.add(targetAbi)
+                            }
+                        }
+                    } catch (e: Exception) { }
+                }
+                if (injectedAbis.isNotEmpty()) addLog("叠加注入: SO ${injectedAbis.joinToString(",")}", LogType.SUCCESS)
+
+                val featureConfig = buildFeatureConfig(enabledFeatures, certSha256, dexCrcMap)
+                zos.putNextEntry(ZipEntry("assets/features.cfg").apply { method = ZipEntry.DEFLATED })
+                zos.write(featureConfig)
+                zos.closeEntry()
+            }
+        }
+        onProgress(0.85f)
+        detailLog("叠加状态: 清单${if (manifestModified) "✓" else "✗"} 配置=${enabledFeatures.size}项")
+        inputFile.delete()
+
+        if (!signEnabled) {
+            intermediateFile.copyTo(outputFile, overwrite = true)
+            intermediateFile.delete()
+            addLog("叠加完成，输出未签名APK (规则注入 ${enabledFeatures.size}项)", LogType.SUCCESS)
+            return true
+        }
+        if (signKey == null || signCert == null) {
+            addLog("叠加签名证书不可用", LogType.ERROR)
+            return false
+        }
+        val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
+        val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
+            .setV1SigningEnabled(true)
+            .setV2SigningEnabled(true)
+            .setInputApk(intermediateFile)
+            .setOutputApk(outputFile)
+            .setMinSdkVersion(26)
+            .build()
+        apkSigner.sign()
+        intermediateFile.delete()
+        addLog("叠加完成并签名 (规则注入 ${enabledFeatures.size}项)", LogType.SUCCESS)
+        true
+    } catch (e: Exception) {
+        addLog("叠加保护层失败: ${e.javaClass.simpleName}: ${e.message}", LogType.ERROR)
+        e.stackTrace.take(5).forEach { addLog("  at ${it.className}.${it.methodName}:${it.lineNumber}", LogType.ERROR) }
+        false
     }
 }
 
@@ -2561,6 +2768,39 @@ private fun encodeAsn1Length(length: Int): ByteArray {
 
 
 
+private val PROTECTION_FEATURE_MAP = mapOf(
+    // 加固（6项）
+    "签名校验" to "sig_verify",
+    "防调试检测" to "anti_debug",
+    "防Hook检测" to "anti_hook",
+    "防注入保护" to "anti_inject",
+    "防内存Dump" to "anti_dump",
+    "防代理检测" to "anti_proxy",
+    // 保护（22项）
+    "完整性校验" to "integrity",
+    "运行时保护" to "runtime_protect",
+    "内存保护" to "mem_protect",
+    "网络安全" to "net_secure",
+    "ROOT检测" to "root_detect",
+    "模拟器检测" to "emu_detect",
+    "Xposed检测" to "xposed_detect",
+    "Frida检测" to "frida_detect",
+    "Magisk检测" to "magisk_detect",
+    "调试器检测" to "debugger_detect",
+    "代码注入检测" to "code_inject",
+    "速度检测" to "speed_check",
+    "多开检测" to "multi_instance",
+    "SSL证书校验" to "ssl_pinning",
+    "数据防泄漏" to "data_leak",
+    "日志保护" to "log_protect",
+    "应用签名校验" to "app_sig",
+    "WebView安全" to "webview_secure",
+    "文件访问控制" to "file_control",
+    "应用组件保护" to "component_protect",
+    "环境密钥检测" to "env_testkeys",
+    "SELinux检测" to "env_selinux"
+)
+
 private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integrityHashes: Map<String, String>): String {
     val sizeHash = "${apkSize.hashCode().toUInt().toString(16)}"
     val featuresJson = allFeatures.joinToString(",") { "\"${it.replace("\"", "\\\"")}\"" }
@@ -2571,7 +2811,7 @@ private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integr
 private fun generateProtectionConfig(allFeatures: List<String>): ByteArray {
     val featureMask = allFeatures.mapIndexed { idx, f -> (f.hashCode() and 0xFF).toLong() shl ((idx % 8) * 8) }.fold(0L) { acc, v -> acc or v }
     val config = ByteArray(128)
-    val magic = "ADFXCBNM_CFG_V9500".toByteArray()
+    val magic = "ADFXCBNM_CFG_V9600".toByteArray()
     System.arraycopy(magic, 0, config, 0, magic.size)
     config[16] = (allFeatures.size and 0xFF).toByte()
     for (i in 0 until 8) {
