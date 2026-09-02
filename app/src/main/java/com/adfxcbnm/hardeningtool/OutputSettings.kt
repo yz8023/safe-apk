@@ -51,19 +51,34 @@ object OutputSettings {
     }
 
     fun resolveApkPath(context: Context, uri: Uri): String? {
-        return try {
-            if (uri.scheme == "file") {
-                uri.path
-            } else {
-                val cursor = context.contentResolver.query(uri, arrayOf("_data"), null, null, null)
-                cursor?.use { c ->
-                    if (c.moveToFirst()) {
-                        val idx = c.getColumnIndex("_data")
-                        if (idx >= 0) c.getString(idx) else null
-                    } else null
+        if (uri.scheme == "file") return uri.path
+        try {
+            val cursor = context.contentResolver.query(uri, arrayOf("_data"), null, null, null)
+            cursor?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex("_data")
+                    if (idx >= 0 && !c.isNull(idx)) {
+                        val p = c.getString(idx)
+                        if (!p.isNullOrBlank()) return p
+                    }
                 }
             }
-        } catch (e: Exception) { null }
+        } catch (e: Exception) { }
+        return runCatching { resolveDocumentIdPath(context, uri) }.getOrNull()
+    }
+
+    private fun resolveDocumentIdPath(context: Context, uri: Uri): String? {
+        if (!DocumentsContract.isDocumentUri(context, uri)) return null
+        val docId = DocumentsContract.getDocumentId(uri)
+        val idx = docId.indexOf(':')
+        if (idx < 0) return null
+        val type = docId.substring(0, idx)
+        val rel = docId.substring(idx + 1)
+        return when (type) {
+            "primary" -> File(Environment.getExternalStorageDirectory(), rel).absolutePath
+            "raw" -> if (rel.startsWith("/")) rel else null
+            else -> null
+        }
     }
 
     fun safTreeToPath(uri: Uri): String? {

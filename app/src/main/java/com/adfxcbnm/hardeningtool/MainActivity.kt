@@ -1894,17 +1894,13 @@ private suspend fun processApk(
                     } else {
                         val storePass = signStorePass?.toCharArray() ?: "android".toCharArray()
                         val keyPass = signKeyPass?.toCharArray() ?: storePass
-                        val keyStore = java.security.KeyStore.getInstance("PKCS12")
-                        FileInputStream(customKsFile).use { fis ->
-                            keyStore.load(fis, storePass)
-                        }
-                        val alias = signAlias?.takeIf { it.isNotBlank() } ?: runCatching { keyStore.aliases().nextElement() }.getOrNull()
-                        if (alias != null) {
-                            signKey = keyStore.getKey(alias, keyPass) as PrivateKey
-                            signCert = keyStore.getCertificate(alias) as X509Certificate
-                            detailLog("使用自定义签名keystore: ${customKsFile.name} (alias=$alias)")
+                        val pair = loadSigningKeyPair(customKsFile, signAlias, storePass, keyPass)
+                        if (pair != null) {
+                            signKey = pair.first
+                            signCert = pair.second
+                            detailLog("使用自定义签名keystore: ${customKsFile.name} (alias=${signAlias?.takeIf { it.isNotBlank() } ?: "自动"})")
                         } else {
-                            addLog("自定义keystore中未找到可用别名", LogType.WARNING)
+                            addLog("自定义keystore解码失败(支持 p12/pfx/jks/keystore/bks)，回退默认签名", LogType.WARNING)
                         }
                     }
                 }
@@ -2349,6 +2345,36 @@ private suspend fun processFrostShellApk(
         addLog("FrostShell 引擎处理失败: ${e.message}", LogType.ERROR)
         ProcessResult(false, "", 0, "", 0f)
     }
+}
+
+private fun loadSigningKeyPair(
+    keystoreFile: File,
+    aliasHint: String?,
+    storePass: CharArray,
+    keyPass: CharArray
+): Pair<PrivateKey, X509Certificate>? {
+    val name = keystoreFile.name.lowercase()
+    val extType = when {
+        name.endsWith(".jks") || name.endsWith(".keystore") || name.endsWith(".ks") -> "JKS"
+        name.endsWith(".bks") -> "BKS"
+        else -> "PKCS12"
+    }
+    val types = linkedSetOf(extType, "PKCS12", "JKS", "BKS")
+    for (type in types) {
+        try {
+            val keyStore = java.security.KeyStore.getInstance(type)
+            FileInputStream(keystoreFile).use { fis -> keyStore.load(fis, storePass) }
+            val alias = aliasHint?.takeIf { it.isNotBlank() }
+                ?: keyStore.aliases().toList().firstOrNull { keyStore.isKeyEntry(it) }
+                ?: continue
+            val key = keyStore.getKey(alias, keyPass) as? PrivateKey ?: continue
+            val cert = keyStore.getCertificate(alias) as? X509Certificate ?: continue
+            return Pair(key, cert)
+        } catch (e: Exception) {
+            // try next keystore type
+        }
+    }
+    return null
 }
 
 private fun generateDebugKeystore(keystoreFile: File, addLog: (String, LogType) -> Unit) {

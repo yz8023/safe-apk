@@ -143,7 +143,8 @@ object FrostReflectionClinitInjector {
         newInstructions.add(invokeHelper)
         newInstructions.add(originalInstructions[originalInstructions.size - 1])
         val newImplementation = ImmutableMethodImplementation(
-            implementation.registerCount, newInstructions, implementation.tryBlocks, implementation.debugItems
+            implementation.registerCount, newInstructions, implementation.tryBlocks,
+            Collections.emptyList()
         )
         return ImmutableMethod(
             method.definingClass, method.name, method.parameters, method.returnType, method.accessFlags,
@@ -250,15 +251,42 @@ object FrostReflectionClinitInjector {
         }
     }
 
-    private class ImmutableClassDefAdapter(
+private class ImmutableClassDefAdapter(
         private val source: ClassDef,
         private val methods: List<Method>
     ) {
         fun build(): ClassDef {
             return ImmutableClassDef(
                 source.type, source.accessFlags, source.superclass, source.interfaces,
-                source.sourceFile, source.annotations, source.fields, methods
+                source.sourceFile, source.annotations, source.fields, methods.map { peelDebugInfo(it) }
             )
+        }
+
+        private fun peelDebugInfo(method: Method): Method {
+            if (method !is ImmutableMethod) {
+                val impl = method.implementation
+                if (impl != null) {
+                    val stripped = ImmutableMethodImplementation(
+                        impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
+                    )
+                    return ImmutableMethod(
+                        method.definingClass, method.name, method.parameters, method.returnType,
+                        method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
+                    )
+                }
+                return method
+            }
+            val impl = method.implementation
+            if (impl != null && impl.debugItems.isNotEmpty()) {
+                val stripped = ImmutableMethodImplementation(
+                    impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
+                )
+                return ImmutableMethod(
+                    method.definingClass, method.name, method.parameters, method.returnType,
+                    method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
+                )
+            }
+            return method
         }
     }
 }
