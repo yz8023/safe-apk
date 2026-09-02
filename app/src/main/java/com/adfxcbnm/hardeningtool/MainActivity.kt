@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.2"
-private const val CONFIG_VERSION = "9.6.2"
+private const val APP_VERSION = "9.6.3"
+private const val CONFIG_VERSION = "9.6.3"
 
 
 
@@ -170,7 +170,8 @@ fun MainScreen() {
     var signStorePassInput by remember { mutableStateOf("") }
     var signKeyPassInput by remember { mutableStateOf("") }
 
-    var frostDetailsExpanded by remember { mutableStateOf(false) }
+    var hardeningExpanded by remember { mutableStateOf(false) }
+    var protectionExpanded by remember { mutableStateOf(false) }
 
     val hardeningItems = remember {
         listOf(
@@ -221,6 +222,25 @@ fun MainScreen() {
 
     fun addDetail(message: String) {
         if (verboseLogs) addLog(message, LogType.INFO)
+    }
+
+    val enableSoRandomization: (Boolean) -> Unit = { enabled ->
+        if (enabled) {
+            frostDisguiseEnabled = false
+            prefs.edit().putBoolean("frost_disguise_enabled", false).apply()
+            addLog("壳SO随机化已开启，伪装加固已自动关闭（互斥）", LogType.INFO)
+        }
+        frostSoRandomization = enabled
+        prefs.edit().putBoolean("frost_so_randomization", enabled).apply()
+    }
+    val enableDisguise: (Boolean) -> Unit = { enabled ->
+        if (enabled) {
+            frostSoRandomization = false
+            prefs.edit().putBoolean("frost_so_randomization", false).apply()
+            addLog("伪装加固已开启，壳SO随机化已自动关闭（互斥）", LogType.INFO)
+        }
+        frostDisguiseEnabled = enabled
+        prefs.edit().putBoolean("frost_disguise_enabled", enabled).apply()
     }
 
     val apkPickerLauncher = rememberLauncherForActivityResult(
@@ -520,6 +540,29 @@ fun MainScreen() {
 
                 Spacer(Modifier.height(10.dp))
 
+                // Feature Sections
+                FeatureSection(
+                    title = "加固",
+                    subtitle = "",
+                    items = hardeningItems,
+                    expanded = hardeningExpanded,
+                    onToggle = { hardeningExpanded = !hardeningExpanded },
+                    accentColor = MaterialTheme.colorScheme.primary
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                FeatureSection(
+                    title = "保护",
+                    subtitle = "",
+                    items = protectionItems,
+                    expanded = protectionExpanded,
+                    onToggle = { protectionExpanded = !protectionExpanded },
+                    accentColor = MaterialTheme.colorScheme.tertiary
+                )
+
+                Spacer(Modifier.height(10.dp))
+
                 // FrostShell Engine Toggle
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -547,74 +590,30 @@ fun MainScreen() {
                                 }
                             )
                         }
-                        Surface(
-                            color = Color.Transparent,
-                            onClick = { frostDetailsExpanded = !frostDetailsExpanded },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val totalSelected = (hardeningItems + protectionItems).count { it.isSelected }
-                                Text(
-                                    "FrostShell 加固细则 (${totalSelected}/${hardeningItems.size + protectionItems.size})",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Icon(
-                                    if (frostDetailsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        AnimatedVisibility(visible = frostDetailsExpanded) {
-                            Column(
-                                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-                            ) {
-                                Text("加固", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                hardeningItems.chunked(2).forEach { rowItems ->
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        rowItems.forEach { item ->
-                                            FeatureChip(
-                                                item = item,
-                                                modifier = Modifier.weight(1f),
-                                                accentColor = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                        repeat(2 - rowItems.size) {
-                                            Spacer(modifier = Modifier.weight(1f))
-                                        }
-                                    }
-                                    Spacer(Modifier.height(3.dp))
-                                }
-                                Text("保护", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.padding(top = 6.dp))
-                                protectionItems.chunked(2).forEach { rowItems ->
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        rowItems.forEach { item ->
-                                            FeatureChip(
-                                                item = item,
-                                                modifier = Modifier.weight(1f),
-                                                accentColor = MaterialTheme.colorScheme.tertiary
-                                            )
-                                        }
-                                        repeat(2 - rowItems.size) {
-                                            Spacer(modifier = Modifier.weight(1f))
-                                        }
-                                    }
-                                    Spacer(Modifier.height(3.dp))
-                                }
-                            }
+                        Divider()
+                        EngineOptionRow(
+                            icon = Icons.Default.Casino,                            title = "壳SO随机化",
+                            subtitle = "每次加固随机化壳SO名称，防特征识别",
+                            checked = frostSoRandomization,
+                            onCheckedChange = { enableSoRandomization(it) }
+                        )
+                        EngineOptionRow(
+                            icon = Icons.Default.VisibilityOff,
+                            title = "伪装加固",
+                            subtitle = "注入厂商特征SO，伪装为知名加固方案",
+                            checked = frostDisguiseEnabled,
+                            onCheckedChange = { enableDisguise(it) }
+                        )
+                        if (frostDisguiseEnabled) {
+                            EngineOptionRow(
+                                icon = Icons.Default.List,
+                                title = "伪装SO名称",
+                                subtitle = if (frostDisguiseName.isBlank()) "未选择，点击选择厂商预设或自定义" else "lib$frostDisguiseName.so",
+                                checked = false,
+                                onCheckedChange = {},
+                                showSwitch = false,
+                                onClick = { showDisguiseDialog = true }
+                            )
                         }
                     }
                 }
@@ -1354,37 +1353,6 @@ fun MainScreen() {
                         prefs.edit().putBoolean("frost_verify_sign", it).apply()
                     }
                 )
-                SettingRow(
-                    icon = Icons.Default.Casino,
-                    title = "壳SO随机化",
-                    subtitle = "每次加固随机化壳SO名称，防特征识别",
-                    checked = frostSoRandomization,
-                    onCheckedChange = {
-                        frostSoRandomization = it
-                        prefs.edit().putBoolean("frost_so_randomization", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.VisibilityOff,
-                    title = "伪装加固",
-                    subtitle = "注入厂商特征SO，伪装为知名加固方案",
-                    checked = frostDisguiseEnabled,
-                    onCheckedChange = {
-                        frostDisguiseEnabled = it
-                        prefs.edit().putBoolean("frost_disguise_enabled", it).apply()
-                    }
-                )
-                if (frostDisguiseEnabled) {
-                    SettingRow(
-                        icon = Icons.Default.List,
-                        title = "伪装SO名称",
-                        subtitle = if (frostDisguiseName.isBlank()) "未选择，点击选择厂商预设或自定义" else "lib$frostDisguiseName.so",
-                        checked = false,
-                        onCheckedChange = {},
-                        showSwitch = false,
-                        onClick = { showDisguiseDialog = true }
-                    )
-                }
                 Spacer(Modifier.height(8.dp))
                 Text("剔除 ABI（未勾选的将保留）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -1676,6 +1644,144 @@ fun MainScreen() {
                 TextButton(onClick = { showDisguiseDialog = false }) { Text("关闭") }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FeatureSection(
+    title: String,
+    subtitle: String,
+    items: List<MutableFeatureItem>,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    accentColor: Color
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column {
+            Surface(
+                color = Color.Transparent,
+                onClick = onToggle,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            color = accentColor.copy(alpha = 0.12f),
+                            shape = CircleShape,
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    if (title == "加固") Icons.Default.Shield else Icons.Default.Security,
+                                    contentDescription = null,
+                                    tint = accentColor,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        if (subtitle.isNotEmpty()) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        val selectedCount = items.count { it.isSelected }
+                        if (selectedCount > 0) {
+                            Surface(
+                                color = accentColor.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    "$selectedCount",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = accentColor,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                    Icon(
+                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                ) {
+                    items.chunked(2).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            rowItems.forEach { item ->
+                                FeatureChip(
+                                    item = item,
+                                    modifier = Modifier.weight(1f),
+                                    accentColor = accentColor
+                                )
+                            }
+                            repeat(2 - rowItems.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                        Spacer(Modifier.height(3.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EngineOptionRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    showSwitch: Boolean = true,
+    onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    trailingHint: String? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (trailingHint != null) {
+            Text(trailingHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), modifier = Modifier.padding(end = 6.dp))
+        }
+        if (showSwitch) {
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        }
     }
 }
 
@@ -2933,7 +3039,7 @@ private fun buildProtectionJson(allFeatures: List<String>, apkSize: Long, integr
 private fun generateProtectionConfig(allFeatures: List<String>): ByteArray {
     val featureMask = allFeatures.mapIndexed { idx, f -> (f.hashCode() and 0xFF).toLong() shl ((idx % 8) * 8) }.fold(0L) { acc, v -> acc or v }
     val config = ByteArray(128)
-    val magic = "ADFXCBNM_CFG_V9602".toByteArray()
+    val magic = "ADFXCBNM_CFG_V9603".toByteArray()
     System.arraycopy(magic, 0, config, 0, magic.size)
     config[16] = (allFeatures.size and 0xFF).toByte()
     for (i in 0 until 8) {
