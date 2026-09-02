@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.4"
-private const val CONFIG_VERSION = "9.6.4"
+private const val APP_VERSION = "9.6.5"
+private const val CONFIG_VERSION = "9.6.5"
 
 
 
@@ -2470,6 +2470,16 @@ private suspend fun processFrostShellApk(
                 addLog("壳SO随机化完成 (${randResult.renamed.size}个名称)", LogType.SUCCESS)
             } else if (randResult.errors.isNotEmpty()) {
                 addLog("壳SO随机化失败: ${randResult.errors.joinToString(";")}", LogType.WARNING)
+            }
+        }
+        frostOptions.disguiseSoName?.let { baseName ->
+            val disguiserResult = SoNameDisguiser.disguise(File(context.filesDir, "shell-files"), baseName)
+            if (disguiserResult.renamed.isNotEmpty() && disguiserResult.errors.isEmpty()) {
+                val oldLabel = disguiserResult.oldName ?: "?"
+                detailLog("壳SO伪装改名: $oldLabel→lib$baseName.so " + disguiserResult.renamed.filter { it != "classes.dex" }.joinToString(","))
+                addLog("壳SO伪装改名完成: 壳库更名为 lib$baseName.so (${disguiserResult.renamed.size}项)", LogType.SUCCESS)
+            } else if (disguiserResult.errors.isNotEmpty()) {
+                addLog("壳SO伪装改名失败: ${disguiserResult.errors.joinToString(";")}", LogType.WARNING)
             }
         }
         val engineLog = com.adfxcbnm.frostshell.util.FrostLogUtils.logListener

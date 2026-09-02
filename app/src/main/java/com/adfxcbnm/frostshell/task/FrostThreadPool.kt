@@ -7,7 +7,7 @@ import java.util.concurrent.TimeUnit
 
 object FrostThreadPool {
     private const val CORE_POOL_SIZE = 1
-    private const val MAX_POOL_SIZE = 2
+    private const val MAX_POOL_SIZE = 1
 
     @Volatile
     private var executor: ThreadPoolExecutor = createExecutor()

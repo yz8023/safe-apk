@@ -77,8 +77,13 @@ object FrostReflectionClinitInjector {
         }
         val arrayList = ArrayList<ClassDef>()
         for (classDef in allClasses) {
-            val arrayList2 = ArrayList<Method>()
             val helperRef = clinitClassToHelperRef[classDef.type]
+            val helpers = hashMap[classDef.type]
+            if (helperRef == null && helpers == null) {
+                arrayList.add(classDef)
+                continue
+            }
+            val arrayList2 = ArrayList<Method>()
             for (method in classDef.methods) {
                 if (helperRef != null && "<clinit>" == method.name) {
                     arrayList2.add(injectHelperCall(method, helperRef))
@@ -86,7 +91,6 @@ object FrostReflectionClinitInjector {
                     arrayList2.add(method)
                 }
             }
-            val helpers = hashMap[classDef.type]
             if (helpers != null) {
                 arrayList2.addAll(helpers)
             }
