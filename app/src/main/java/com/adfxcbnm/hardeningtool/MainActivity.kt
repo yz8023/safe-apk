@@ -2300,15 +2300,37 @@ private suspend fun processApk(
                     addLog("apksig库不可用，无法签名", LogType.ERROR)
                     return@withContext ProcessResult(false, "", 0, "", 0f)
                 }
+                val outputParent = outputFile.parentFile
+                if (outputParent != null && !outputParent.exists() && !outputParent.mkdirs()) {
+                    addLog("输出目录不存在且创建失败: ${outputParent.absolutePath}", LogType.ERROR)
+                    return@withContext ProcessResult(false, "", 0, "", 0f)
+                }
+                if (outputFile.exists()) {
+                    runCatching { outputFile.delete() }
+                        .onFailure { addLog("清理旧输出文件失败: ${it.message}", LogType.WARNING) }
+                }
                 val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
+                val signedTmp = File(context.cacheDir, "${baseName}_signed_${System.currentTimeMillis()}.apk")
                 val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
                     .setV1SigningEnabled(true)
                     .setV2SigningEnabled(true)
                     .setInputApk(intermediateFile)
-                    .setOutputApk(outputFile)
+                    .setOutputApk(signedTmp)
                     .setMinSdkVersion(26)
                     .build()
                 apkSigner.sign()
+                if (!signedTmp.exists() || signedTmp.length() <= 0) {
+                    addLog("签名输出为空", LogType.ERROR)
+                    return@withContext ProcessResult(false, "", 0, "", 0f)
+                }
+                try {
+                    signedTmp.copyTo(outputFile, overwrite = true)
+                } catch (copyErr: Exception) {
+                    addLog("签名完成但复制到输出路径失败: ${copyErr.message}", LogType.ERROR)
+                    throw copyErr
+                } finally {
+                    runCatching { if (signedTmp.exists()) signedTmp.delete() }
+                }
                 addLog("签名完成 (v1+v2)", LogType.SUCCESS)
                 stages.end(LogType.SUCCESS)
             } catch (signErr: Exception) {
@@ -2765,15 +2787,25 @@ private fun overlayProtectionLayer(
             addLog("叠加签名证书不可用", LogType.ERROR)
             return false
         }
+        val signedTmp = File(context.cacheDir, "${outputFile.nameWithoutExtension}_signed_${System.currentTimeMillis()}.apk")
         val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
         val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
             .setV1SigningEnabled(true)
             .setV2SigningEnabled(true)
             .setInputApk(intermediateFile)
-            .setOutputApk(outputFile)
+            .setOutputApk(signedTmp)
             .setMinSdkVersion(26)
             .build()
         apkSigner.sign()
+        if (!signedTmp.exists() || signedTmp.length() <= 0) {
+            addLog("叠加签名输出为空", LogType.ERROR)
+            return false
+        }
+        try {
+            signedTmp.copyTo(outputFile, overwrite = true)
+        } finally {
+            runCatching { if (signedTmp.exists()) signedTmp.delete() }
+        }
         intermediateFile.delete()
         addLog("叠加完成并签名 (规则注入 ${enabledFeatures.size}项)", LogType.SUCCESS)
         true
