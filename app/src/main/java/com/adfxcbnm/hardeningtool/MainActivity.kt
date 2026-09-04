@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.7"
-private const val CONFIG_VERSION = "9.6.7"
+private const val APP_VERSION = "9.7.0"
+private const val CONFIG_VERSION = "9.7.0"
 
 
 
@@ -157,6 +157,8 @@ fun MainScreen() {
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
     var frostSoRandomization by remember { mutableStateOf(prefs.getBoolean("frost_so_randomization", false)) }
+    var frostStringEncrypt by remember { mutableStateOf(prefs.getBoolean("frost_string_encrypt", false)) }
+    var frostStringEncryptMinLen by remember { mutableStateOf(prefs.getInt("frost_string_encrypt_min_len", 6)) }
     var frostDisguiseEnabled by remember { mutableStateOf(prefs.getBoolean("frost_disguise_enabled", false)) }
     var frostDisguiseName by remember { mutableStateOf(prefs.getString("frost_disguise_name", "") ?: "") }
     var showDisguiseDialog by remember { mutableStateOf(false) }
@@ -624,6 +626,9 @@ fun MainScreen() {
                             soRandomization = frostSoRandomization,
                             disguiseSoName = if (frostDisguiseEnabled && frostDisguiseName.isNotBlank()) frostDisguiseName.trim() else null,
                             excludedAbi = if (frostExcludedAbi.isEmpty()) null else frostExcludedAbi.toList(),
+                            stringEncrypt = frostStringEncrypt,
+                            stringEncryptMinLen = frostStringEncryptMinLen,
+                            stringEncryptKeywords = if (frostStringEncrypt) loadStringEncryptKeywords(context) else null,
                             signEnabled = signEnabled,
                             signKeystorePath = signKeystorePath.ifEmpty { null },
                             signAlias = signAlias.ifEmpty { null },
@@ -1325,6 +1330,16 @@ fun MainScreen() {
                     onCheckedChange = {
                         frostVerifySign = it
                         prefs.edit().putBoolean("frost_verify_sign", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Lock,
+                    title = "字符串加密",
+                    subtitle = "敏感字符串加密 (L1 string-encrypt)",
+                    checked = frostStringEncrypt,
+                    onCheckedChange = {
+                        frostStringEncrypt = it
+                        prefs.edit().putBoolean("frost_string_encrypt", it).apply()
                     }
                 )
                 Spacer(Modifier.height(8.dp))
@@ -2440,6 +2455,7 @@ private suspend fun processFrostShellApk(
         if (frostOptions.smaller) detailLog("启用: 瘦身(smaller)")
         if (frostOptions.verifySign) detailLog("启用: 运行时验签(verify-sign)")
         if (frostOptions.soRandomization) detailLog("启用: 壳SO随机化")
+        if (frostOptions.stringEncrypt) detailLog("启用: 字符串加密(L1, minLen=${frostOptions.stringEncryptMinLen}, keywords=${frostOptions.stringEncryptKeywords?.size ?: 0})")
         frostOptions.disguiseSoName?.let { detailLog("启用: 伪装加固(lib$it.so)") }
         frostOptions.excludedAbi?.let { detailLog("启用: 剔除ABI ${it.joinToString(",")}") }
         if (frostOptions.soRandomization) {
@@ -2828,6 +2844,28 @@ private fun disguiseAssociateAssets(soName: String): List<String> {
         "zhizhu" to listOf("vender_marker_baidu.bin")
     )
     return envMarkers[lower]?.let { it + "finger_marker.bin" } ?: listOf("finger_marker.bin")
+}
+
+/**
+ * 从 assets/string_presets.json 读取 L1 字符串加密关键词集合。
+ * 格式：JSONArray[{title, keywords: [], category}]。
+ */
+private fun loadStringEncryptKeywords(context: Context): Set<String> {
+    return try {
+        val json = context.assets.open("string_presets.json").bufferedReader().use { it.readText() }
+        val arr = org.json.JSONArray(json)
+        val set = linkedSetOf<String>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.getJSONObject(i)
+            val keywords = obj.getJSONArray("keywords")
+            for (j in 0 until keywords.length()) {
+                set.add(keywords.getString(j))
+            }
+        }
+        set
+    } catch (e: Exception) {
+        emptySet()
+    }
 }
 
 private fun loadSigningKeyPair(

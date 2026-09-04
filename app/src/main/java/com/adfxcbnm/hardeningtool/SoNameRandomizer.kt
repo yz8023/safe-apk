@@ -12,7 +12,31 @@ object SoNameRandomizer {
 
     data class Result(val renamed: Map<String, String>, val errors: List<String>)
 
-    fun randomize(shellFilesDir: File): Result {
+    private fun newHexName(): String {
+        val sb = StringBuilder(16)
+        for (i in 0 until 16) sb.append(HEX[RANDOM.nextInt(16)])
+        return sb.toString()
+    }
+
+    /**
+     * 生成黑名单安全的随机名（16位小写hex），与旧名不冲突。
+     * 遵循 SoNamePolicy 黑名单约束，避免命中已知壳特征名。
+     */
+    private fun newSafeName(): String {
+        var candidate = newHexName()
+        while (SoNamePolicy.isKnownProtectorName(candidate)) candidate = newHexName()
+        return candidate
+    }
+
+    /**
+     * 兼容入口：保持旧调用契约，委托给 randomizeSafe（含黑名单约束）。
+     */
+    fun randomize(shellFilesDir: File): Result = randomizeSafe(shellFilesDir)
+
+    /**
+     * 会话级随机化：为壳 SO 旧名（lib{16hex}.so）生成新的随机名。
+     */
+    fun randomizeSafe(shellFilesDir: File): Result {
         val oldNames = linkedSetOf<String>()
         val dexFile = File(shellFilesDir, "dex/classes.dex")
         var dexBytes: ByteArray? = null
@@ -32,8 +56,8 @@ object SoNameRandomizer {
 
         val mapping = linkedMapOf<String, String>()
         for (old in oldNames) {
-            var fresh = newHexName()
-            while (oldNames.contains(fresh) || mapping.containsValue(fresh)) fresh = newHexName()
+            var fresh = newSafeName()
+            while (oldNames.contains(fresh) || mapping.containsValue(fresh)) fresh = newSafeName()
             mapping[old] = fresh
         }
 
@@ -75,11 +99,5 @@ object SoNameRandomizer {
         var text = String(bytes, Charsets.ISO_8859_1)
         for ((old, new) in mapping) text = text.replace(old, new)
         return text.toByteArray(Charsets.ISO_8859_1)
-    }
-
-    private fun newHexName(): String {
-        val sb = StringBuilder(16)
-        for (i in 0 until 16) sb.append(HEX[RANDOM.nextInt(16)])
-        return sb.toString()
     }
 }

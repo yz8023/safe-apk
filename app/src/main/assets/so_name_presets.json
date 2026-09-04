@@ -40,5 +40,8 @@
   {"title": "Epic加固", "name": "EP_arm", "category": "海外方案"},
   {"title": "ShadowSafety", "name": "shadowsafety", "category": "海外方案"},
   {"title": "TiamoMuxue", "name": "TiamoMuxue", "category": "新兴厂商"},
-  {"title": "Master-Mu", "name": "Master-Mu", "category": "新兴厂商"}
+  {"title": "Master-Mu", "name": "Master-Mu", "category": "新兴厂商"},
+  {"title": "字节火山引擎", "name": "vmp", "category": "新兴厂商"},
+  {"title": "腾讯御安全VMP", "name": "shell-supervmp", "category": "新兴厂商"},
+  {"title": "爱加密VMP", "name": "ijm", "category": "新兴厂商"}
 ]

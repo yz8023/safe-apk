@@ -4,6 +4,7 @@ import com.adfxcbnm.frostshell.config.FrostConst
 import com.adfxcbnm.frostshell.config.FrostProtectRules
 import com.adfxcbnm.frostshell.config.FrostShellConfig
 import com.adfxcbnm.frostshell.dex.FrostJunkCodeGenerator
+import com.adfxcbnm.frostshell.dex.FrostStringEncryptor
 import com.adfxcbnm.frostshell.elf.FrostReadElf
 import com.adfxcbnm.frostshell.model.Instruction
 import com.adfxcbnm.frostshell.model.MultiDexCode
@@ -64,6 +65,9 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
     private var protectConfigFile: String? = null
     private var verifySign = false
     private var riskCheckFlags = 0
+    private var stringEncrypt = false
+    private var stringEncryptMinLen = 6
+    private var stringEncryptKeywords: Set<String>? = null
 
     init {
         this.filePath = builder.filePath
@@ -80,6 +84,9 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         this.protectConfigFile = builder.protectConfigFile
         this.verifySign = builder.verifySign
         this.riskCheckFlags = builder.riskCheckFlags
+        this.stringEncrypt = builder.stringEncrypt
+        this.stringEncryptMinLen = builder.stringEncryptMinLen
+        this.stringEncryptKeywords = builder.stringEncryptKeywords
     }
 
     fun setProtectConfigFile(protectConfigFile: String?) {
@@ -98,6 +105,24 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
 
     fun setRiskCheckFlags(riskCheckFlags: Int) {
         this.riskCheckFlags = riskCheckFlags
+    }
+
+    fun isStringEncrypt(): Boolean = stringEncrypt
+
+    fun setStringEncrypt(stringEncrypt: Boolean) {
+        this.stringEncrypt = stringEncrypt
+    }
+
+    fun getStringEncryptMinLen(): Int = stringEncryptMinLen
+
+    fun setStringEncryptMinLen(stringEncryptMinLen: Int) {
+        this.stringEncryptMinLen = stringEncryptMinLen
+    }
+
+    fun getStringEncryptKeywords(): Set<String>? = stringEncryptKeywords
+
+    fun setStringEncryptKeywords(stringEncryptKeywords: Set<String>?) {
+        this.stringEncryptKeywords = stringEncryptKeywords
     }
 
     fun isSmaller(): Boolean = smaller
@@ -593,6 +618,21 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
                         splitDex.delete()
                     }
                 }
+                if (isStringEncrypt()) {
+                    // L1 字符串加密 pass：必须在 extractAllMethods（方法体清零）之前执行
+                    try {
+                        val keywords = getStringEncryptKeywords().orEmpty()
+                        val ret = FrostStringEncryptor.process(dexFile, keywords, getStringEncryptMinLen())
+                        if (ret.encryptedCount > 0) {
+                            FrostLogUtils.info(
+                                "String encrypted: %d strings, %d helpers in %s",
+                                ret.encryptedCount, ret.helperCount, dexFile.name
+                            )
+                        }
+                    } catch (e: Exception) {
+                        FrostLogUtils.warn("WARNING: string encrypt %s fail: %s", dexFile.name, e.message)
+                    }
+                }
                 val extractedDexName = if (dexFile.name.endsWith(".dex")) dexFile.name.replace(Regex("\\.dex$"), "_extracted.dat") else "_extracted.dat"
                 val extractedDexFile = File(dexFile.parent, extractedDexName)
                 val obfuscate = !isSmaller()
@@ -953,6 +993,9 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         var protectConfigFile: String? = null
         var verifySign = false
         var riskCheckFlags = 0
+        var stringEncrypt = false
+        var stringEncryptMinLen = 6
+        var stringEncryptKeywords: Set<String>? = null
 
         fun filePath(path: String): Builder {
             this.filePath = path
@@ -991,6 +1034,21 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
 
         fun riskCheckFlags(riskCheckFlags: Int): Builder {
             this.riskCheckFlags = riskCheckFlags
+            return this
+        }
+
+        fun stringEncrypt(stringEncrypt: Boolean): Builder {
+            this.stringEncrypt = stringEncrypt
+            return this
+        }
+
+        fun stringEncryptMinLen(stringEncryptMinLen: Int): Builder {
+            this.stringEncryptMinLen = stringEncryptMinLen
+            return this
+        }
+
+        fun stringEncryptKeywords(stringEncryptKeywords: Set<String>?): Builder {
+            this.stringEncryptKeywords = stringEncryptKeywords
             return this
         }
 

@@ -75,6 +75,9 @@ object FrostShellEngine {
                 if (options.smaller) this.smaller(true)
                 if (options.verifySign) this.verifySign(true)
                 if (!options.excludedAbi.isNullOrEmpty()) this.excludedAbi(options.excludedAbi)
+                if (options.stringEncrypt) this.stringEncrypt(true)
+                this.stringEncryptMinLen(options.stringEncryptMinLen)
+                this.stringEncryptKeywords(options.stringEncryptKeywords)
             }
         builder.build().protect()
         return findOutputApk(outputDir, apkPath)
