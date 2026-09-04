@@ -54,8 +54,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.6"
-private const val CONFIG_VERSION = "9.6.6"
+private const val APP_VERSION = "9.6.7"
+private const val CONFIG_VERSION = "9.6.7"
 
 
 
