@@ -6,9 +6,6 @@ import com.adfxcbnm.frostshell.util.FrostFileUtils
 import com.adfxcbnm.frostshell.util.FrostKeyUtils
 import com.adfxcbnm.frostshell.util.FrostLogUtils
 import com.adfxcbnm.frostshell.util.FrostZipUtils
-import com.wind.meditor.core.FileProcesser
-import com.wind.meditor.property.AttributeItem
-import com.wind.meditor.property.ModificationProperty
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -106,9 +103,7 @@ class FrostApk private constructor(builder: Builder) : FrostAndroidPackage(build
     override fun setExtractNativeLibs(manifestDir: String) {
         val inManifestPath = manifestDir + File.separator + "AndroidManifest.xml"
         val outManifestPath = manifestDir + File.separator + "AndroidManifest_new.xml"
-        val property = ModificationProperty()
-        property.addApplicationAttribute(AttributeItem("extractNativeLibs", "true"))
-        FileProcesser.processManifestFile(inManifestPath, outManifestPath, property)
+        FrostApkManifestEditor.writeApplicationExtractNativeLibs(inManifestPath, outManifestPath, "true")
         val inManifestFile = File(inManifestPath)
         val outManifestFile = File(outManifestPath)
         inManifestFile.delete()

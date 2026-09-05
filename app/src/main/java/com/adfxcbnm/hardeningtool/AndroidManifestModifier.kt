@@ -27,6 +27,22 @@ object AndroidManifestModifier {
 
     data class ModResult(val data: ByteArray, val modified: Boolean)
 
+    data class ApplicationAttrPatch(
+        val name: String,
+        val value: String,
+        val type: Int = STRING_TYPE
+    ) {
+        fun dataOf(): Int = when (type) {
+            STRING_TYPE -> 0
+            else -> if (value.equals("true", ignoreCase = true)) -1 else 0
+        }
+
+        companion object {
+            const val STRING_TYPE = 0x03
+            const val BOOLEAN_TYPE = 0x12
+        }
+    }
+
     private fun s2b(v: Short) = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(v).array()
     private fun i2b(v: Int) = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(v).array()
 
@@ -65,7 +81,14 @@ object AndroidManifestModifier {
         val isUtf8: Boolean
     )
 
-    fun modifyManifest(orig: ByteArray, context: android.content.Context? = null, features: List<String> = emptyList(), targetPackage: String = "", log: ((String) -> Unit)? = null): ModResult {
+    fun modifyManifest(
+        orig: ByteArray,
+        context: android.content.Context? = null,
+        features: List<String> = emptyList(),
+        targetPackage: String = "",
+        log: ((String) -> Unit)? = null,
+        appAttrs: List<ApplicationAttrPatch> = emptyList()
+    ): ModResult {
         try {
             if (orig.size < 8) { log?.invoke("manifest too small: ${orig.size}"); return ModResult(orig, false) }
 
@@ -94,31 +117,82 @@ object AndroidManifestModifier {
             val authority = "com.adfxcbnm.authority" + if (targetPackage.isNotEmpty()) ".$targetPackage" else ""
 
             val androidNs = "http://schemas.android.com/apk/res/android"
-            val neededStrings = mutableListOf(
-                "com.adfxcbnm.protect.SecurityCheckProvider",
-                authority,
-                "name",
-                "authorities",
-                "exported",
-                "false",
-                "provider",
-                androidNs
-            )
-            for (s in neededStrings) {
-                if (!stringPool.contains(s)) stringPool.add(s)
+
+            // 写 application 属性时，新增的属性名/值必须出现在字符串池中
+            val appElementIdx = elements.indexOfFirst { it.name == "application" && it.isStart }
+            val appElement = if (appElementIdx >= 0) elements[appElementIdx] else null
+
+            for (patch in appAttrs) {
+                if (!stringPool.contains(patch.name)) stringPool.add(patch.name)
+                if (patch.type == TYPE_STRING && !stringPool.contains(patch.value)) stringPool.add(patch.value)
+                if (!stringPool.contains(androidNs)) stringPool.add(androidNs)
             }
 
-            val insIdx = findApplicationEnd(elements, appIdx)
-            val providerAttrs = listOf(
-                Attr("name", "com.adfxcbnm.protect.SecurityCheckProvider", TYPE_STRING, 0, androidNs),
-                Attr("authorities", authority, TYPE_STRING, 0, androidNs),
-                Attr("exported", "false", TYPE_INT_BOOLEAN, 0, androidNs)
-            )
-            val providerStart = Chunk.Element("provider", providerAttrs, true, null)
-            val providerEnd = Chunk.Element("provider", null, false, null)
+            val appElementPatched =
+                if (appAttrs.isNotEmpty() && appElementIdx >= 0) {
+                    var changed = false
+                    val newAttrs = appElement!!.attrs?.toMutableList() ?: mutableListOf()
+                    for (patch in appAttrs) {
+                        val existingIdx = newAttrs.indexOfFirst { it.name == patch.name }
+                        if (existingIdx >= 0) {
+                            if (patch.type == TYPE_STRING) {
+                                if (newAttrs[existingIdx].value != patch.value) {
+                                    newAttrs[existingIdx] = newAttrs[existingIdx].copy(
+                                        value = patch.value,
+                                        type = TYPE_STRING,
+                                        data = 0
+                                    )
+                                    changed = true
+                                }
+                            } else {
+                                if (newAttrs[existingIdx].data != patch.dataOf()) {
+                                    newAttrs[existingIdx] = newAttrs[existingIdx].copy(
+                                        value = patch.value,
+                                        type = patch.type,
+                                        data = patch.dataOf()
+                                    )
+                                    changed = true
+                                }
+                            }
+                        } else {
+                            newAttrs.add(Attr(patch.name, patch.value, patch.type, patch.dataOf(), androidNs))
+                            changed = true
+                        }
+                    }
+                    if (changed) elements[appElementIdx] = appElement.copy(attrs = newAttrs)
+                    changed
+                } else {
+                    false
+                }
 
-            elements.add(insIdx, providerStart)
-            elements.add(insIdx + 1, providerEnd)
+            val injectProvider = appAttrs.isEmpty()
+            if (injectProvider) {
+                val neededStrings = mutableListOf(
+                    "com.adfxcbnm.protect.SecurityCheckProvider",
+                    authority,
+                    "name",
+                    "authorities",
+                    "exported",
+                    "false",
+                    "provider",
+                    androidNs
+                )
+                for (s in neededStrings) {
+                    if (!stringPool.contains(s)) stringPool.add(s)
+                }
+
+                val insIdx = findApplicationEnd(elements, appIdx)
+                val providerAttrs = listOf(
+                    Attr("name", "com.adfxcbnm.protect.SecurityCheckProvider", TYPE_STRING, 0, androidNs),
+                    Attr("authorities", authority, TYPE_STRING, 0, androidNs),
+                    Attr("exported", "false", TYPE_INT_BOOLEAN, 0, androidNs)
+                )
+                val providerStart = Chunk.Element("provider", providerAttrs, true, null)
+                val providerEnd = Chunk.Element("provider", null, false, null)
+
+                elements.add(insIdx, providerStart)
+                elements.add(insIdx + 1, providerEnd)
+            }
 
             val out = ByteArrayOutputStream()
             writeStringPool(out, stringPool, originalUtf8)

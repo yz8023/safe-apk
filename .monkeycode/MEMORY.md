@@ -74,3 +74,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 委托式 `RewrittenClassDef`/`RewrittenDexFile` 已抽取为共享顶层类（`app/src/main/java/com/adfxcbnm/frostshell/dex/RewrittenDexFile.kt`），后续任何 dex 重建 pass（字符串加密/keep-classes split/伪装 so 改名/反射注入）必须复用它们，不得再直接 `ImmutableClassDef`+`ImmutableDexFile`（内部会对整 dex 全量 immutable 化 + TreeSet 排序 + 遍历全部指令，真机 512MB 堆 OOM）。
   - 真机加固工具（MainActivity）的 `FrostShellEngine.prepare` 会在每次加固前从 assets 强制重装 `shell-files`（filesDir 跨会话持久化，上次随机化/伪装/OOM 中断可能改写 dex 引用与 so 名导致失配），排查「伪装加固找不到壳库 so」时先确认 assets 基线（`frostshell/dex/classes.dex` 引用 `lib8012d9ae47c7f010.so`，libs 各 ABI 同名一致）。
   - 发布流程：`git push` 分支 → `git tag vX.Y.Z` + push tag → `gh release create vX.Y.Z`（本环境 gh CLI 走 `[bot]` token）→ `gh release upload` 附件 → `gh release edit` 用 `--notes-file` 写 body；注意 zsh 反引号会触发命令替换，release notes 含 backtick 或特殊符号时必须用 `--notes-file` 而非内联参数。
+
+[Project Knowledge Summary]
+- Date: 2026-09-05
+- Context: Discovered by Agent while diagnosing 加固后 APK AndroidManifest 被破坏（appComponentFactory 写成 "activity"、activity 块丢失）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 根因：meditor(pxb `com.wind.meditor` / `pxb.android.axml`) 写新属性时属性名→android 资源 ID 映射依赖 classloader 资源 `assets/public.xml`（`ResourceIdXmlReader.findIdFromXmlFile`）；目标 APK 的 assets 未打包该文件 → `getResourceId()` 恒 -1，新增/改写属性丢 ID 或错位，在系统解析侧表现为属性值错乱、activity 丢失。校验方法：`aapt dump xmltree xxx.apk AndroidManifest.xml` 看新属性是否带 `(0x01010003)` 之类资源 ID。
+  - 决定：引擎 APK 写路径全部弃用 meditor，改用自研 `AndroidManifestModifier`（`modifyManifest(private appAttrs: List<ApplicationAttrPatch>)` 支持写 application 的 name/appComponentFactory（STRING 0x03）、debuggable/extractNativeLibs（BOOLEAN 0x12，data=true 用 -1/0xffffffff））。关键资源 ID：0x01010003=android:name、0x0101057a=appComponentFactory、0x010104ea=extractNativeLibs、0x0101000f=debuggable。
+  - 本地回归方式：编译 `app/build/tmp/kotlin-classes/debug` + kotlin-stdlib + android.jar + ironshell-deps.jar 后，直接 `java -cp` 调 `FrostApkManifestEditor.writeApplicationName/writeAppComponentFactory/writeApplicationExtractNativeLibs` 对真实 manifest 跑三步链，再用 `ChainToApk` 重打包 → `aapt dump xmltree` 校验。AAB 路径无 meditor（protobuf `FrostAabManifestEditor`/`FrostAndroidResourcesEditor`，资源 ID 已正确），无需改动。
+  - 复合场景下 meditor 产物在设备端（OPPO PLG110/Android 16/512MB 堆）表现出 appComponentFactory="activity" 等字符串错位；本地用完整 public.xml 时症状消失，佐证 public.xml 依赖是根因。

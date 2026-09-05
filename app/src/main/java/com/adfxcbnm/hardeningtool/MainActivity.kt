@@ -2415,8 +2415,10 @@ private suspend fun processApk(
                             val data = zis.readBytes()
                             try {
                                 val modResult = AndroidManifestModifier.modifyManifest(
-                                    data, context, enabledFeatures, targetPkg
-                                ) { msg -> log("manifest: $msg") }
+                                    data, context, enabledFeatures, targetPkg,
+                                    log = { msg -> log("manifest: $msg") },
+                                    appAttrs = emptyList()
+                                )
                                 manifestModified = modResult.modified
                                 if (manifestModified) {
                                     val authority = "com.adfxcbnm.authority" + if (targetPkg.isNotEmpty()) ".$targetPkg" else ""
