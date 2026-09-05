@@ -23,7 +23,6 @@ import com.android.tools.smali.dexlib2.iface.instruction.Instruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
-import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter
@@ -87,46 +86,45 @@ object FrostStringEncryptor {
         for (classDef in dex.classes) {
             val replacer = CallReplacer(classDef, keywords, minLen)
             var classDirty = false
-            val newMethods = ArrayList<Method>()
+            val newDirectMethods = ArrayList<Method>()
             for (method in classDef.directMethods) {
                 val replaced = replacer.rewriteMethod(method)
                 if (replaced != null) {
-                    newMethods.add(replaced)
+                    newDirectMethods.add(replaced)
                     classDirty = true
                 } else {
-                    newMethods.add(method)
+                    newDirectMethods.add(method)
                 }
             }
+            val newVirtualMethods = ArrayList<Method>()
             for (method in classDef.virtualMethods) {
                 val replaced = replacer.rewriteMethod(method)
                 if (replaced != null) {
-                    newMethods.add(replaced)
+                    newVirtualMethods.add(replaced)
                     classDirty = true
                 } else {
-                    newMethods.add(method)
+                    newVirtualMethods.add(method)
                 }
             }
             val classReplacementCount = replacer.replacements
             encryptedCount += classReplacementCount
             if (classReplacementCount > 0) {
-                newMethods.add(buildHelperMethod(classDef.type, replacer.helperName))
+                newDirectMethods.add(buildHelperMethod(classDef.type, replacer.helperName))
                 helperCount++
                 classDirty = true
             }
             newClasses.add(
                 if (classDirty) {
-                    ImmutableClassDef(
-                        classDef.type, classDef.accessFlags, classDef.superclass, classDef.interfaces,
-                        classDef.sourceFile, classDef.annotations, classDef.fields, newMethods
-                    )
+                    // 委托式 ClassDef：仅替换方法集合，不做整类 immutable 重建（避免大 dex TreeSet 排序 OOM）
+                    RewrittenClassDef(classDef, newDirectMethods, newVirtualMethods)
                 } else {
                     classDef
                 }
             )
         }
         if (encryptedCount > 0) {
-            val immutable = com.android.tools.smali.dexlib2.immutable.ImmutableDexFile(dex.opcodes, newClasses)
-            DexFileFactory.writeDexFile(dexFile.absolutePath, immutable)
+            // 委托式 DexFile：交由 DexPool 原样写入，避免 ImmutableDexFile 对全部类再做 immutable 化
+            DexFileFactory.writeDexFile(dexFile.absolutePath, RewrittenDexFile(dex.opcodes, newClasses))
             FrostLogUtils.info(
                 "string encrypt: strings=%d helpers=%d file=%s",
                 encryptedCount, helperCount, dexFile.name

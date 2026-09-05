@@ -1,5 +1,7 @@
 package com.adfxcbnm.hardeningtool
 
+import com.adfxcbnm.frostshell.dex.RewrittenClassDef
+import com.adfxcbnm.frostshell.dex.RewrittenDexFile
 import com.android.tools.smali.dexlib2.DexFileFactory
 import com.android.tools.smali.dexlib2.Opcodes
 import com.android.tools.smali.dexlib2.iface.ClassDef
@@ -8,8 +10,6 @@ import com.android.tools.smali.dexlib2.iface.instruction.Instruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
-import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef
-import com.android.tools.smali.dexlib2.immutable.ImmutableDexFile
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c
@@ -141,82 +141,90 @@ object SoNameDisguiser {
         val newClasses = ArrayList<ClassDef>()
         for (classDef in dex.classes) {
             var classDirty = false
-            val newMethods = ArrayList<Method>()
-            for (method in classDef.methods) {
-                val impl = method.implementation
-                if (impl == null) {
-                    newMethods.add(method)
-                    continue
-                }
-                val newInstructions = ArrayList<Instruction>()
-                var methodDirty = false
-                for (instruction in impl.instructions) {
-                    if (instruction !is ReferenceInstruction || instruction !is OneRegisterInstruction) {
-                        newInstructions.add(instruction)
-                        continue
-                    }
-                    val reference = instruction.reference
-                    if (reference !is StringReference) {
-                        newInstructions.add(instruction)
-                        continue
-                    }
-                    val value = reference.string
-                    val newValue = when (value) {
-                        oldPlain -> newPlain
-                        oldSlash -> newSlash
-                        else -> null
-                    }
-                    if (newValue == null) {
-                        newInstructions.add(instruction)
-                        continue
-                    }
-                    methodDirty = true
-                    classDirty = true
-                    val insnOpcode = (instruction as Instruction).opcode
-                    val replacement: Instruction = when (insnOpcode) {
-                        com.android.tools.smali.dexlib2.Opcode.CONST_STRING_JUMBO ->
-                            ImmutableInstruction31c(
-                                com.android.tools.smali.dexlib2.Opcode.CONST_STRING_JUMBO,
-                                instruction.registerA,
-                                ImmutableStringReference(newValue)
-                            )
-                        else ->
-                            ImmutableInstruction21c(
-                                com.android.tools.smali.dexlib2.Opcode.CONST_STRING,
-                                instruction.registerA,
-                                ImmutableStringReference(newValue)
-                            )
-                    }
-                    newInstructions.add(replacement)
-                }
-                if (methodDirty) {
-                    val newImpl = ImmutableMethodImplementation(
-                        impl.registerCount,
-                        newInstructions,
-                        impl.tryBlocks,
-                        impl.debugItems
-                    )
-                    newMethods.add(
-                        ImmutableMethod(
-                            method.definingClass, method.name, method.parameters, method.returnType,
-                            method.accessFlags, method.annotations, method.hiddenApiRestrictions, newImpl
-                        )
-                    )
+            val newDirectMethods = ArrayList<Method>()
+            for (method in classDef.directMethods) {
+                val rewritten = rewriteMethod(method, oldPlain, oldSlash, newPlain, newSlash)
+                if (rewritten !== method) classDirty = true
+                newDirectMethods.add(rewritten)
+            }
+            val newVirtualMethods = ArrayList<Method>()
+            for (method in classDef.virtualMethods) {
+                val rewritten = rewriteMethod(method, oldPlain, oldSlash, newPlain, newSlash)
+                if (rewritten !== method) classDirty = true
+                newVirtualMethods.add(rewritten)
+            }
+            newClasses.add(
+                if (classDirty) {
+                    // 委托式 ClassDef：仅替换方法集合，避免整类 immutable 重建（大 dex OOM）
+                    RewrittenClassDef(classDef, newDirectMethods, newVirtualMethods)
                 } else {
-                    newMethods.add(method)
+                    classDef
                 }
-            }
-            val newClass = if (classDirty) {
-                ImmutableClassDef(
-                    classDef.type, classDef.accessFlags, classDef.superclass, classDef.interfaces,
-                    classDef.sourceFile, classDef.annotations, classDef.fields, newMethods
-                )
-            } else {
-                classDef
-            }
-            newClasses.add(newClass)
+            )
         }
-        val immutableDex = ImmutableDexFile(dex.opcodes, newClasses)
-        DexFileFactory.writeDexFile(dexFile.absolutePath, immutableDex)
+        // 委托式 DexFile：交由 DexPool 原样写入，避免 ImmutableDexFile 全量 immutable 化
+        DexFileFactory.writeDexFile(dexFile.absolutePath, RewrittenDexFile(dex.opcodes, newClasses))
+    }
+
+    private fun rewriteMethod(
+        method: Method,
+        oldPlain: String,
+        oldSlash: String,
+        newPlain: String,
+        newSlash: String
+    ): Method {
+        val impl = method.implementation
+        if (impl == null) return method
+        val newInstructions = ArrayList<Instruction>()
+        var methodDirty = false
+        for (instruction in impl.instructions) {
+            if (instruction !is ReferenceInstruction || instruction !is OneRegisterInstruction) {
+                newInstructions.add(instruction)
+                continue
+            }
+            val reference = instruction.reference
+            if (reference !is StringReference) {
+                newInstructions.add(instruction)
+                continue
+            }
+            val value = reference.string
+            val newValue = when (value) {
+                oldPlain -> newPlain
+                oldSlash -> newSlash
+                else -> null
+            }
+            if (newValue == null) {
+                newInstructions.add(instruction)
+                continue
+            }
+            methodDirty = true
+            val insnOpcode = (instruction as Instruction).opcode
+            val replacement: Instruction = when (insnOpcode) {
+                com.android.tools.smali.dexlib2.Opcode.CONST_STRING_JUMBO ->
+                    ImmutableInstruction31c(
+                        com.android.tools.smali.dexlib2.Opcode.CONST_STRING_JUMBO,
+                        instruction.registerA,
+                        ImmutableStringReference(newValue)
+                    )
+                else ->
+                    ImmutableInstruction21c(
+                        com.android.tools.smali.dexlib2.Opcode.CONST_STRING,
+                        instruction.registerA,
+                        ImmutableStringReference(newValue)
+                    )
+            }
+            newInstructions.add(replacement)
+        }
+        if (!methodDirty) return method
+        val newImpl = ImmutableMethodImplementation(
+            impl.registerCount,
+            newInstructions,
+            impl.tryBlocks,
+            impl.debugItems
+        )
+        return ImmutableMethod(
+            method.definingClass, method.name, method.parameters, method.returnType,
+            method.accessFlags, method.annotations, method.hiddenApiRestrictions, newImpl
+        )
     }
 }
