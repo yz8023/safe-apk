@@ -14,8 +14,8 @@
 - **技术栈**：Kotlin 1.9.20（App 壳层 + FrostShell 引擎，包 `com.adfxcbnm.frostshell.*`）+ C++17（原生保护库 `protection.cpp`）+ Compose（Material3）UI。
 - **minSdk / targetSdk**：`26` / `34`（Android 8.0 - Android 14）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
-- **当前版本**：`9.10.1`（versionCode 43）。
-- **commit 哈希**：`bf6145b`（v9.10.0），`v9.10.1` 为进行中变更。
+- **当前版本**：`9.10.2`（versionCode 44）。
+- **commit 哈希**：`bf6145b`（v9.10.0），`467caea`（v9.10.1），`473efc6`（v9.10.2）。
 - **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260902-fix-manifest-resource-id`，PR #1）。
 
 ## 2. 开发环境
@@ -108,6 +108,9 @@ rm -rf app/.cxx
   - **v9.9.0 复制兜底强化（需求2）**：`OutputSettings.copyOutput` 多级兜底——① 删除旧目标后 `File.copyTo`；② MediaStore.Downloads（Q+，IS_PENDING+RELATIVE_PATH）；③ 应用专属 downloads 目录。返回值统一为实际落盘路径，落盘位置决定成功判定，彻底消除旧文件残留假成功（`deliveredPath` 三链路统一接入）。
   - **v9.9.0 伪装加固修复（需求3）**：`SoNameDisguiser.disguise` 先核实 `libs/<abi>/` 下存在与 dex 引用对应的 so 文件，无匹配则不动 dex 并明确报错；多 ABI 改名原子化（任一失败回滚已改名的 so），杜绝"dex 已引用新名却无对应 so"的伪成功。
   - **v9.10.1 方法浏览器重复 key 崩溃修复（需求4）**：`ApkMethodScanner.scan` 对扫描结果按 `MethodEntry.uniqueKey` 去重，杜绝同一类方法（多 dex 重复声明）在 `LazyColumn items(key=...)` 撞 key 导致 `IllegalArgumentException: Key ... was already used`。
+  - **v9.10.2 真机两项修复（需求5）**：
+    - ① 512MB 堆 OOM 根治：`FrostStringEncryptor`（字符串加密 L1）、`FrostDexUtils.splitDex`（keep-classes）、`SoNameDisguiser`（伪装加固）三处此前均构造 `ImmutableDexFile`+`ImmutableClassDef`，会对整 dex 所有类做 immutable 化与 TreeSet 排序并遍历全部指令，栈顶 `ImmutableClassDef.immutableSetOf` 正是 OOM 现场；全部改为共享委托式 `RewrittenClassDef`/`RewrittenDexFile`（`dex/RewrittenDexFile.kt`，`LinkedHashSet` 保序、交由 DexPool 原样写入），与反射注入同一手法。
+    - ② 伪装加固找不到壳库 so 失败：`FrostShellEngine.prepare` 原先仅在 `shell-files` 为空时从 assets 解压，而 `filesDir` 跨会话持久化——上次运行（随机化/伪装/OOM 中断）改写的 dex 引用（libvenSec.so）与 libs/ 内 so 文件失配，导致 `SoNameDisguiser` 匹配不到对应 so 中止；现改为每次加固前强制删除并重装 `shell-files`（assets 基线自洽：dex 引用 `lib8012d9ae47c7f010.so` 与各 ABI 文件一致），随机化/伪装始终基于干净基线。
   - **v9.10.0 崩溃修复（需求1-3）**：
     - ① `FrostReflectionClinitInjector` 反射类名注入 OOM 修复：主循环改用 `Array<ClassDef>`，命中反射 clinit 的类经委托式 `RewrittenClassDef` 透传（不再重建 `ImmutableClassDef`，规避 dexlib2 TreeSet 排序+toString 的 512MB 堆打满）；写入用 `RewrittenDexFile`（`LinkedHashSet` 保持顺序，规避 `ImmutableDexFile` 全量排序）；`getMethods()` 合并 direct+virtual 迭代器；新增 `peelDebugInfo` 剥离 debugItems 不触发整体重建。
     - ② Compose 动画/首页 OOM 缓解：随第一组 OOM 链路修复（dex 线程不再打满堆 → GC 压力下降 → UI 动画不再被挤压 OOM）。
@@ -117,7 +120,7 @@ rm -rf app/.cxx
 - **进行中**：（无）
 - **已搁置**：
   - native 侧 VMP 解释器 / RC4 SO 解密 / ELF section 注入：仅文档对接点（`docs/NATIVE-DOCKING.md`），未实现。
-- **最近可运行的 commit**：`bf6145b`（v9.10.0）；v9.10.1 工作区构建已验证（`assembleDebug` 通过，待提交）。
+- **最近可运行的 commit**：`473efc6`（v9.10.2，已推送并打 tag）；v9.10.0 `bf6145b`、v9.10.1 `467caea`。
 
 ## 7. 待开发内容
 
@@ -166,7 +169,7 @@ MainActivity (UI + 开关) → FrostEngineOptions → FrostShellEngine.protectAp
 
 ```
 app/
-├── build.gradle.kts               # v9.10.1 / versionCode 43
+├── build.gradle.kts               # v9.10.2 / versionCode 44
 ├── libs/ironshell-deps.jar        # FrostShell 引擎字节码依赖（11.8MB，必需）
 └── src/main/
     ├── AndroidManifest.xml
@@ -229,7 +232,7 @@ app/
 
 ## 14. 验收标准
 
-1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.10.1' versionCode='43'`）。
+1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.10.2' versionCode='44'`）。
 2. **运行**：安装并启动到首页，能选择 APK 并完成一次加固，产物可安装运行。
 3. **CI**：push 到 `main` 后 `.github/workflows/build-apk.yml` 自动构建出 debug APK 并上传 artifact。
-4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.10.1_debug.apk`。
+4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.10.2_debug.apk`。
