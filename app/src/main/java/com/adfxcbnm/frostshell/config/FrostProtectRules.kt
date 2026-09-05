@@ -1,6 +1,47 @@
 package com.adfxcbnm.frostshell.config
 
 object FrostProtectRules {
+
+    /**
+     * 方法与字段匹配规则。格式: "类全限定名.成员名" 或 "类全限定名.*"，
+     * 类名使用 dex 内部格式如 "Lcom/foo/Bar;"。
+     * 空表示不过滤（保留全量抽取行为）。
+     */
+    private var memberRules: Array<String> = arrayOf()
+
+    @Synchronized fun setMemberRules(rules: Array<String>) {
+        memberRules = rules
+    }
+
+    /**
+     * 方法级抽取过滤。为空则全部方法都参与抽取（保持原行为）；
+     * 非空时只有命中的方法才被抽取，未命中的方法保留原始指令（不进入指令池）。
+     */
+    @Synchronized fun shouldExtractMethod(className: String, methodName: String): Boolean {
+        if (memberRules.isEmpty()) return true
+        return matchesMemberRule(className, methodName)
+    }
+
+    private fun matchesMemberRule(className: String, methodName: String): Boolean {
+        val dotIndex = className.lastIndexOf(';')
+        val baseClass = if (dotIndex >= 0) className.substring(0, dotIndex + 1) else className
+        for (rule in memberRules) {
+            val sep = rule.lastIndexOf('.')
+            if (sep <= 0) continue
+            val ruleClass = rule.substring(0, sep)
+            val ruleMember = rule.substring(sep + 1)
+            val classMatched = if (ruleClass.endsWith(";")) ruleClass == baseClass
+            else ruleClass == trimClassEnd(baseClass)
+            if (!classMatched) continue
+            if (ruleMember == "*" || ruleMember == methodName) return true
+        }
+        return false
+    }
+
+    private fun trimClassEnd(className: String): String {
+        return if (className.endsWith(";")) className.dropLast(1) else className
+    }
+
     private var excludeRules: Array<String> = arrayOf(
         "Lafzkl/development/.*", "Landroid/.*", "Landroid/arch/.*", "Landroid/content/.*", "Landroid/opengl/.*", "Landroid/support/.*", "Landroid/widget/.*", "Landroidx/.*",
         "Lanet/channel/.*", "Lanetwork/channel/.*", "Lanywheresoftware/.*", "Lau/com/bytecode/opencsv/.*", "Lbiz/neoline/.*", "Lbutterknife/.*", "Lch/boye/httpclientandroidlib/.*", "Lch/qos/logback/.*",
