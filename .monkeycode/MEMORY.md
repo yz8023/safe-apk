@@ -84,3 +84,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 决定：引擎 APK 写路径全部弃用 meditor，改用自研 `AndroidManifestModifier`（`modifyManifest(private appAttrs: List<ApplicationAttrPatch>)` 支持写 application 的 name/appComponentFactory（STRING 0x03）、debuggable/extractNativeLibs（BOOLEAN 0x12，data=true 用 -1/0xffffffff））。关键资源 ID：0x01010003=android:name、0x0101057a=appComponentFactory、0x010104ea=extractNativeLibs、0x0101000f=debuggable。
   - 本地回归方式：编译 `app/build/tmp/kotlin-classes/debug` + kotlin-stdlib + android.jar + ironshell-deps.jar 后，直接 `java -cp` 调 `FrostApkManifestEditor.writeApplicationName/writeAppComponentFactory/writeApplicationExtractNativeLibs` 对真实 manifest 跑三步链，再用 `ChainToApk` 重打包 → `aapt dump xmltree` 校验。AAB 路径无 meditor（protobuf `FrostAabManifestEditor`/`FrostAndroidResourcesEditor`，资源 ID 已正确），无需改动。
   - 复合场景下 meditor 产物在设备端（OPPO PLG110/Android 16/512MB 堆）表现出 appComponentFactory="activity" 等字符串错位；本地用完整 public.xml 时症状消失，佐证 public.xml 依赖是根因。
+
+[Project Knowledge Summary]
+- Date: 2026-09-05
+- Context: Discovered by Agent while diagnosing 加固产物启动闪退 VerifyError（onBackPressed target dex pc not at instruction start）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 根因：dex 改写 pass 用 `ImmutableMethodImplementation` 重建方法体时把 DexBacked 指令（保留原始 codeOffset）与新指令混拼，插入指令后方法指令流右移，但 goto/if/switch 仍引用原始偏移 → 跳转目标落在指令中间，ART verifier 拒绝加载（`VerifyError: void ...onBackPressed(): [0x15] target dex pc 0x28 is not at instruction start`）。dexlib2 的 `getCodeOffset()` 对 goto/if 是相对当前指令的偏移（target=指令起始+offset），对 switch/payload 是方法内绝对偏移。
+  - 修复范式：凡需在既有方法体内插入/替换指令，必须用 `MutableMethodImplementation(MethodImplementation)` 复制方法体（构造函数会把全部 offset 指令经 codeAddress→index 映射转 label 式 builder 指令，插入/替换后 `fixInstructions` 自动重算所有偏移），不可直接拼接 backed 指令；该构造函数还会保留 tryBlocks/debugItems（用 `mapCodeAddressToIndex` 重新映射）。`FrostStringEncryptor.rewriteMethod` 与 `FrostReflectionClinitInjector.injectHelperCall` 均已按此修复（v9.10.4）。
+  - 注意：`MutableMethodImplementation` 的 `registerCount` 是 `private final` 无 setter，需增寄存器时用匿名 `MethodImplementation` facade 覆盖 `getRegisterCount()` 透传 mutable 的 instructions/tryBlocks/debugItems（不可把 builder 指令抽出另包 Immutable，会丢 label 上下文）。
+  - 本地 dex 级回归验证：javac+d8 构造含分支/goto/packed-switch 的样例 dex，java -cp 直调 pass 后遍历所有 `OffsetInstruction`，检查 `target = 指令起始+getCodeOffset()`（goto/if）或 `getCodeOffset()`（switch）是否落在指令起始边界集合，等价 ART verifier 检查；运行时需 `android.util.Log` stub（编译后的 app classes 会引用 android.util.Log，driver classpath 前置 stubout）。

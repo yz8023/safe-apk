@@ -14,8 +14,8 @@
 - **技术栈**：Kotlin 1.9.20（App 壳层 + FrostShell 引擎，包 `com.adfxcbnm.frostshell.*`）+ C++17（原生保护库 `protection.cpp`）+ Compose（Material3）UI。
 - **minSdk / targetSdk**：`26` / `34`（Android 8.0 - Android 14）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
-- **当前版本**：`9.10.3`（versionCode 45）。
-- **commit 哈希**：`bf6145b`（v9.10.0），`467caea`（v9.10.1），`473efc6`（v9.10.2），（v9.10.3 见 §6）。
+- **当前版本**：`9.10.4`（versionCode 46）。
+- **commit 哈希**：`bf6145b`（v9.10.0），`467caea`（v9.10.1），`473efc6`（v9.10.2），（v9.10.3/v9.10.4 见 §6）。
 - **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260902-fix-manifest-resource-id`，PR #1）。
 
 ## 2. 开发环境
@@ -111,6 +111,10 @@ rm -rf app/.cxx
   - **v9.10.2 真机两项修复（需求5）**：
     - ① 512MB 堆 OOM 根治：`FrostStringEncryptor`（字符串加密 L1）、`FrostDexUtils.splitDex`（keep-classes）、`SoNameDisguiser`（伪装加固）三处此前均构造 `ImmutableDexFile`+`ImmutableClassDef`，会对整 dex 所有类做 immutable 化与 TreeSet 排序并遍历全部指令，栈顶 `ImmutableClassDef.immutableSetOf` 正是 OOM 现场；全部改为共享委托式 `RewrittenClassDef`/`RewrittenDexFile`（`dex/RewrittenDexFile.kt`，`LinkedHashSet` 保序、交由 DexPool 原样写入），与反射注入同一手法。
     - ② 伪装加固找不到壳库 so 失败：`FrostShellEngine.prepare` 原先仅在 `shell-files` 为空时从 assets 解压，而 `filesDir` 跨会话持久化——上次运行（随机化/伪装/OOM 中断）改写的 dex 引用（libvenSec.so）与 libs/ 内 so 文件失配，导致 `SoNameDisguiser` 匹配不到对应 so 中止；现改为每次加固前强制删除并重装 `shell-files`（assets 基线自洽：dex 引用 `lib8012d9ae47c7f010.so` 与各 ABI 文件一致），随机化/伪装始终基于干净基线。
+  - **v9.10.4 dex 改写 pass 跳转目标错位修复（需求7）**：
+    - ① 根因：`FrostStringEncryptor.rewriteMethod` 与 `FrostReflectionClinitInjector.injectHelperCall` 重建方法体时把 DexBacked 指令（保留原始 codeOffset）与新指令混拼进 `ImmutableMethodImplementation`——插入新指令后方法指令流右移，但 goto/if/switch 仍引用原始偏移，跳转目标落在指令中间，ART verifier 拒绝加载（真机崩溃 `void onBackPressed(): [0x15] target dex pc 0x28 is not at instruction start`，App 启动即闪退）。
+    - ② 修复：两处均改用 `MutableMethodImplementation(MethodImplementation)` 复制方法体——构造函数将全部 offset 指令经 codeAddress→index 映射转为 label 式 builder 指令，插入/替换后 `fixInstructions` 统一重算所有跳转偏移；`FrostStringEncryptor` 将命中 const-string 替换为密文常量并以 (idx+1) 锚点倒序插入 4 条（const/16 + invoke-static/range + move-result-object + move-object/16），因 Mutable 的 registerCount 为 private final，用 `MethodImplementation` facade 覆盖 `getRegisterCount()` 提升 2 个临时寄存器。
+    - ③ 本地回归：javac+d8 构造含分支/goto 的 onBackPressed、for 循环 clinit、packed-switch 的样例 dex，java -cp 直调两个 pass 后用 dexlib2 校验所有 offset 指令目标是否落在指令起始（等价 ART verifier 检查）：baseline=0，字符串加密 7 处后=0，clinit 注入后=0。
   - **v9.10.3 manifest 写路径去 meditor 化（需求6）**：
     - ① 根因：meditor(pxb `com.wind.meditor`/`pxb.android.axml`) 写新属性时「属性名→android 资源 ID」映射依赖 classloader 资源 `assets/public.xml`，目标 APK assets 未打包该文件 → `getResourceId()` 恒 -1，新增/改写属性丢 ID 或错位，在系统解析侧表现为 `appComponentFactory` 被写成非法字面量（如 "activity"）、activity 块丢失/桌面无图标。
     - ② 修复：APK 写路径全部弃用 meditor，改用自研 `AndroidManifestModifier`：`modifyManifest` 新增 `appAttrs: List<ApplicationAttrPatch>` 参数，支持写 application 的 `name`/`appComponentFactory`（STRING 0x03）、`debuggable`/`extractNativeLibs`（BOOLEAN 0x12，true→data=-1/0xffffffff）；`FrostApkManifestEditor.writeApplicationName/writeAppComponentFactory/writeDebuggable` 与新增 `writeApplicationExtractNativeLibs` 全部改调 `AndroidManifestModifier`（保留 pxb `AxmlParser` 的只读属性读取）；`FrostApk.setExtractNativeLibs` 同步切换；AAB 路径本就无 meditor（protobuf `FrostAabManifestEditor`/`FrostAndroidResourcesEditor`，资源 ID 已正确），不动。
@@ -124,7 +128,7 @@ rm -rf app/.cxx
 - **进行中**：（无）
 - **已搁置**：
   - native 侧 VMP 解释器 / RC4 SO 解密 / ELF section 注入：仅文档对接点（`docs/NATIVE-DOCKING.md`），未实现。
-- **最近可运行的 commit**：`473efc6`（v9.10.2，已推送并打 tag）；v9.10.0 `bf6145b`、v9.10.1 `467caea`。（v9.10.3 提交哈希见 §6）
+- **最近可运行的 commit**：`473efc6`（v9.10.2，已推送并打 tag）；v9.10.0 `bf6145b`、v9.10.1 `467caea`。（v9.10.3/v9.10.4 提交哈希见 §6）
 
 ## 7. 待开发内容
 
@@ -173,7 +177,7 @@ MainActivity (UI + 开关) → FrostEngineOptions → FrostShellEngine.protectAp
 
 ```
 app/
-├── build.gradle.kts               # v9.10.3 / versionCode 45
+├── build.gradle.kts               # v9.10.4 / versionCode 46
 ├── libs/ironshell-deps.jar        # FrostShell 引擎字节码依赖（11.8MB，必需）
 └── src/main/
     ├── AndroidManifest.xml
@@ -232,11 +236,11 @@ app/
 | `Zip file already contains entry assets/...` | deps jar 只放字节码，资产放 `assets/` |
 | `checkDebugDuplicateClasses` | apksig 版本与 AGP 一致（8.5.0），勿随意升级 |
 | 依赖下载失败 | 换镜像（第 4 节）或 GitHub 代理 |
-| 加固产物无法解析 | 检查 `--auto-verify` 日志；清单资源 ID 重写（v9.6.6 修复项）+ meditor 缺 `public.xml` 导致属性丢 ID/错位（v9.10.3 已去 meditor，见 §6） |
+| 加固产物无法解析 | 检查 `--auto-verify` 日志；清单资源 ID 重写（v9.6.6 修复项）+ meditor 缺 `public.xml` 导致属性丢 ID/错位（v9.10.3 已去 meditor，见 §6）+ dex 改写 pass 偏移错位 VerifyError（v9.10.4 已修，见 §6） |
 
 ## 14. 验收标准
 
-1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.10.3' versionCode='45'`）。
+1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.10.4' versionCode='46'`）。
 2. **运行**：安装并启动到首页，能选择 APK 并完成一次加固，产物可安装运行。
 3. **CI**：push 到 `main` 后 `.github/workflows/build-apk.yml` 自动构建出 debug APK 并上传 artifact。
-4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.10.3_debug.apk`。
+4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.10.4_debug.apk`。
