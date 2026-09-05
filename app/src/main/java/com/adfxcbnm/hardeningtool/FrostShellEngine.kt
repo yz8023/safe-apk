@@ -13,8 +13,14 @@ object FrostShellEngine {
         return try {
             val filesDir = context.filesDir
             val shellFilesDir = File(filesDir, "shell-files")
-            if (!shellFilesDir.exists() || shellFilesDir.listFiles().isNullOrEmpty()) {
-                copyAssetDir(context, "frostshell", shellFilesDir)
+            // filesDir 跨会话持久化：上一次运行（随机化/伪装/OOM 中断）可能已改写
+            // shell-files 内的 dex 引用与 so 文件名，导致 dex 引用与 libs 失配。
+            // 每次加固前强制从 assets 基线重装，保证 dex 引用与 so 文件始终自洽。
+            if (shellFilesDir.exists()) {
+                shellFilesDir.deleteRecursively()
+            }
+            if (!copyAssetDir(context, "frostshell", shellFilesDir)) {
+                return false
             }
             val ksDir = File(filesDir, "assets")
             val ksFile = File(ksDir, FrostConst.KEY_STORE_ASSET_NAME)
@@ -34,14 +40,14 @@ object FrostShellEngine {
         }
     }
 
-    private fun copyAssetDir(context: Context, assetDir: String, dest: File) {
-        val list = context.assets.list(assetDir) ?: return
+    private fun copyAssetDir(context: Context, assetDir: String, dest: File): Boolean {
+        val list = context.assets.list(assetDir) ?: return false
         for (name in list) {
             val assetPath = "$assetDir/$name"
             val target = File(dest, name)
             val child = context.assets.list(assetPath)
             if (child != null && child.isNotEmpty()) {
-                copyAssetDir(context, assetPath, target)
+                if (!copyAssetDir(context, assetPath, target)) return false
             } else {
                 target.parentFile?.mkdirs()
                 context.assets.open(assetPath).use { input ->
@@ -49,6 +55,7 @@ object FrostShellEngine {
                 }
             }
         }
+        return true
     }
 
     fun protectApk(apkPath: String, outputDir: File, options: FrostEngineOptions = FrostEngineOptions()): File {

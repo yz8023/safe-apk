@@ -3,6 +3,7 @@ package com.adfxcbnm.frostshell.util
 import com.adfxcbnm.frostshell.config.FrostProtectRules
 import com.adfxcbnm.frostshell.config.FrostShellConfig
 import com.adfxcbnm.frostshell.dex.FrostReflectionClinitInjector
+import com.adfxcbnm.frostshell.dex.RewrittenDexFile
 import com.adfxcbnm.frostshell.model.Instruction
 import com.android.dex.ClassData
 import com.android.dex.ClassDef
@@ -83,7 +84,7 @@ object FrostDexUtils {
                         newClasses.add(classDef)
                         keepClassesCount.incrementAndGet()
                     }
-                    ImmutableDexFile(value.opcodes, newClasses)
+                    RewrittenDexFile(value.opcodes, ArrayList(newClasses))
                 }
             }
         })
@@ -98,7 +99,7 @@ object FrostDexUtils {
                         if (protectRules.matchRules(classDef.type)) continue
                         newClasses.add(classDef)
                     }
-                    ImmutableDexFile(value.opcodes, newClasses)
+                    RewrittenDexFile(value.opcodes, ArrayList(newClasses))
                 }
             }
         })
