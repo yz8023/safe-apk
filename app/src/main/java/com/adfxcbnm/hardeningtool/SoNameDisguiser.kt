@@ -34,47 +34,70 @@ object SoNameDisguiser {
         val errors = mutableListOf<String>()
         val renamed = mutableListOf<String>()
         val dexFile = File(shellFilesDir, "dex/classes.dex")
+        if (!dexFile.isFile) {
+            errors.add("壳dex不存在: ${dexFile.absolutePath}")
+            return Result(null, renamed, errors)
+        }
 
-        val currentRefs = if (dexFile.isFile) scanSoRefs(dexFile) else emptyList()
+        val currentRefs = scanSoRefs(dexFile)
         if (currentRefs.isEmpty()) {
             errors.add("壳dex中未发现引用的壳库名: ${dexFile.absolutePath}")
             return Result(null, renamed, errors)
         }
         val primaryRef = currentRefs.first()
 
-        if (dexFile.isFile) {
-            try {
-                rewriteDex(dexFile, primaryRef, newSoName)
-                renamed.add(dexFile.name)
-            } catch (e: Exception) {
-                errors.add("壳dex重写失败: ${e.message}")
-            }
-        } else {
-            errors.add("壳dex不存在: ${dexFile.absolutePath}")
-        }
-
+        // 先核实壳库文件是否存在且可改名：dex 引用名必须能落到 libs/<abi>/ 下，
+        // 否则改了 dex 引用却没有对应 so 打包，应用运行时将加载不存在的库（伪装失败）。
         val libsRoot = File(shellFilesDir, "libs")
         val abiDirs = libsRoot.listFiles()?.filter { it.isDirectory } ?: emptyList()
+        val matched = linkedMapOf<File, File>() // abi上级目录 -> matched so
         for (abi in abiDirs) {
-            for (so in abi.listFiles()?.toList() ?: emptyList()) {
-                if (so.name != primaryRef) continue
-                val target = File(so.parentFile, newSoName)
-                try {
-                    if (target.exists()) {
-                        if (!target.delete()) {
-                            errors.add("${abi.name}/$target 旧文件清理失败")
-                            continue
-                        }
-                    }
-                    if (!so.renameTo(target)) {
-                        errors.add("${abi.name}/${so.name} 改名失败")
+            val so = abi.listFiles()?.firstOrNull { it.isFile && it.name == primaryRef }
+            if (so != null) matched[abi] = so
+        }
+        if (matched.isEmpty()) {
+            errors.add("未找到与壳库引用对应的 so 文件(需要: $primaryRef)，伪装已中止以保留原库名")
+            return Result(primaryRef, renamed, errors)
+        }
+
+        try {
+            rewriteDex(dexFile, primaryRef, newSoName)
+        } catch (e: Exception) {
+            errors.add("壳dex重写失败: ${e.message}")
+        }
+
+        if (errors.isNotEmpty()) {
+            // dex 未改写成功则保持原状，直接失败返回
+            return Result(primaryRef, emptyList(), errors)
+        }
+
+        val done = mutableListOf<Pair<File, File>>() // old so -> new so
+        for ((abi, so) in matched) {
+            val target = File(so.parentFile, newSoName)
+            try {
+                if (target.exists()) {
+                    if (!target.delete()) {
+                        errors.add("${abi.name}/$target 旧文件清理失败")
                         continue
                     }
-                    renamed.add("${abi.name}/$newSoName")
-                } catch (e: Exception) {
-                    errors.add("${abi.name}/${so.name} 改名异常: ${e.message}")
                 }
+                if (!so.renameTo(target)) {
+                    errors.add("${abi.name}/${so.name} 改名失败")
+                    continue
+                }
+                done.add(so to target)
+                renamed.add("${abi.name}/$newSoName")
+            } catch (e: Exception) {
+                errors.add("${abi.name}/${so.name} 改名异常: ${e.message}")
             }
+        }
+
+        if (errors.isNotEmpty()) {
+            // 有 abi 改名失败：回滚已成功改名的 so，避免 dex 引用新名但缺失对应库
+            for ((old, new) in done) {
+                try { new.renameTo(old) } catch (e: Exception) { }
+            }
+            return Result(primaryRef, emptyList(), errors)
         }
         return Result(primaryRef, renamed, errors)
     }

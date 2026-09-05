@@ -23,23 +23,38 @@ object FrostProtectRules {
     }
 
     private fun matchesMemberRule(className: String, methodName: String): Boolean {
-        val dotIndex = className.lastIndexOf(';')
-        val baseClass = if (dotIndex >= 0) className.substring(0, dotIndex + 1) else className
         for (rule in memberRules) {
-            val sep = rule.lastIndexOf('.')
-            if (sep <= 0) continue
-            val ruleClass = rule.substring(0, sep)
-            val ruleMember = rule.substring(sep + 1)
-            val classMatched = if (ruleClass.endsWith(";")) ruleClass == baseClass
-            else ruleClass == trimClassEnd(baseClass)
+            if (rule.startsWith("regex:")) {
+                val patternText = rule.substring("regex:".length).trim()
+                if (patternText.isEmpty()) continue
+                val candidate = "$className.$methodName"
+                try {
+                    if (Regex(patternText, RegexOption.IGNORE_CASE).matches(candidate)) return true
+                } catch (e: Exception) { }
+                continue
+            }
+            val semiIndex = rule.indexOf(';')
+            if (semiIndex < 0) {
+                // 纯方法名关键词/正则规则，如 .*vip.* ，匹配任意类中的方法名
+                try {
+                    if (Regex(rule).matches(methodName)) return true
+                } catch (e: Exception) { }
+                continue
+            }
+            val ruleClass = rule.substring(0, semiIndex + 1)
+            val classMatched = if (ruleClass.endsWith(";")) ruleClass == className
+            else {
+                try { Regex(ruleClass, RegexOption.IGNORE_CASE).matches(className) } catch (e: Exception) { false }
+            }
             if (!classMatched) continue
+            val ruleMember = rule.substring(semiIndex + 1).removePrefix(".")
+            if (ruleMember.isEmpty()) continue
             if (ruleMember == "*" || ruleMember == methodName) return true
+            try {
+                if (Regex(ruleMember).matches(methodName)) return true
+            } catch (e: Exception) { }
         }
         return false
-    }
-
-    private fun trimClassEnd(className: String): String {
-        return if (className.endsWith(";")) className.dropLast(1) else className
     }
 
     private var excludeRules: Array<String> = arrayOf(
