@@ -103,12 +103,13 @@ rm -rf app/.cxx
   - L1 字符串加密（`FrostStringEncryptor`）+ SO 命名黑名单约束（`SoNamePolicy`）+ SO 随机化（`SoNameRandomizer.randomizeSafe`）。
   - 方法级抽取（仅抽取指定函数）：`FrostProtectRules.memberRules` 按 类名.方法名/类名.* 过滤，未命中方法保留原始指令不进入指令池（`FrostDexUtils.extractAllMethods`），UI 入口在 FrostShell 引擎选项"仅抽取指定函数"。
   - 加固类型选择 UI（FrostShell 引擎选项：keep-classes / smaller / verify-sign / ABI 剔除 / SO 随机化 / 伪装 / 字符串加密 / 方法级抽取）。
+  - 输出兜底：公共共享目录(如 /storage/emulated/0/Download) File 直写 ENOENT 时经 MediaStore.Downloads 落盘（`OutputSettings.copyOutput`），三条加固链路（传统/叠加/引擎）均接入。
   - CI：`.github/workflows/build-apk.yml`。
 - **进行中**：（无）
 - **已搁置**：
   - `FrostReflectionClinitInjector`（反射类名混淆注入）OOM 修复中间态已 `git stash`（`stash@{0}`），未提交。
   - native 侧 VMP 解释器 / RC4 SO 解密 / ELF section 注入：仅文档对接点（`docs/NATIVE-DOCKING.md`），未实现。
-- **最近可运行的 commit**：`3611559`（v9.7.0）。
+- **最近可运行的 commit**：`1c2dce4`（v9.8.0，后续 ENOENT 修复见 git log）。
 
 ## 7. 待开发内容
 

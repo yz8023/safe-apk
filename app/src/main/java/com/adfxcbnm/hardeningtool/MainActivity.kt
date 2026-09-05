@@ -2067,6 +2067,8 @@ private suspend fun processApk(
     val stages = StageTracker(addLog)
     lateinit var outputFile: File
     var tempFile: File? = null
+    var successfulOutput: String? = null
+    var signedFileSize: Long = 0
     try {
         val sourceApkPath = OutputSettings.resolveApkPath(context, apkUri)
         val (outputDir, dirSource) = OutputSettings.getOutputDir(context, sourceApkPath)
@@ -2366,8 +2368,16 @@ private suspend fun processApk(
             }
             stages.begin("跳过签名")
             try {
-                intermediateFile.copyTo(outputFile, overwrite = true)
-                addLog("签名已禁用，输出未签名APK", LogType.WARNING)
+                val saved = OutputSettings.copyOutput(context, intermediateFile, outputFile) { uri ->
+                    addLog("共享目录不可直写，已保存至系统下载(MediaStore): $uri", LogType.WARNING)
+                    successfulOutput = uri
+                }
+                signedFileSize = intermediateFile.length()
+                if (saved != null) {
+                    addLog("签名已禁用，输出未签名APK", LogType.WARNING)
+                } else {
+                    addLog("签名已禁用，输出未签名APK(经MediaStore)", LogType.WARNING)
+                }
                 stages.end(LogType.WARNING, "未签名")
             } catch (copyErr: Exception) {
                 stages.end(LogType.ERROR, copyErr.message)
@@ -2410,8 +2420,15 @@ private suspend fun processApk(
                     addLog("签名输出为空", LogType.ERROR)
                     return@withContext ProcessResult(false, "", 0, "", 0f)
                 }
+                signedFileSize = signedTmp.length()
                 try {
-                    signedTmp.copyTo(outputFile, overwrite = true)
+                    val saved = OutputSettings.copyOutput(context, signedTmp, outputFile) { uri ->
+                        addLog("共享目录不可直写，已保存至系统下载(MediaStore): $uri", LogType.WARNING)
+                        successfulOutput = uri
+                    }
+                    if (saved == null && successfulOutput == null) {
+                        addLog("复制输出失败", LogType.ERROR)
+                    }
                 } catch (copyErr: Exception) {
                     addLog("签名完成但复制到输出路径失败: ${copyErr.message}", LogType.ERROR)
                     throw copyErr
@@ -2432,14 +2449,16 @@ private suspend fun processApk(
         tempFile?.let { if (it.exists()) it.delete() }
         if (intermediateFile.exists()) intermediateFile.delete()
 
-        if (outputFile.exists() && outputFile.length() > 0) {
-            val sizeDiff = outputFile.length() - apkSize
+        val deliveredByMediaStore = successfulOutput != null
+        if (deliveredByMediaStore || (outputFile.exists() && outputFile.length() > 0)) {
+            val realSize = if (deliveredByMediaStore) signedFileSize else outputFile.length()
+            val sizeDiff = realSize - apkSize
             val diffStr = if (sizeDiff >= 0) "+$sizeDiff" else "$sizeDiff"
             onProgress(1f)
             val elapsed = System.currentTimeMillis() - t0
-            val mb = outputFile.length() / (1024f * 1024f)
-            addLog("完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节", LogType.SUCCESS)
-            if (autoVerify) {
+            val mb = realSize / (1024f * 1024f)
+            addLog("完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节${if (deliveredByMediaStore) "(已存系统下载)" else ""}", LogType.SUCCESS)
+            if (autoVerify && !deliveredByMediaStore) {
                 stages.begin("自动校验")
                 val (pass, total) = verifyHardenedApk(outputFile, detailLog)
                 if (pass == total) {
@@ -2451,7 +2470,7 @@ private suspend fun processApk(
                 }
             }
             stages.finish()
-            ProcessResult(true, outputFile.absolutePath, outputFile.length(), diffStr, 1f)
+            ProcessResult(true, successfulOutput ?: outputFile.absolutePath, realSize, diffStr, 1f)
         } else {
             addLog("输出文件不存在或为空", LogType.ERROR)
             stages.finish()
@@ -2577,6 +2596,7 @@ private suspend fun processFrostShellApk(
         val sourceInputSize = inputFile.length()
         inputFile.delete()
         if (outApk != null && outApk!!.exists() && outApk!!.length() > 0) {
+            var mediaStoreUri: String? = null
             val overlayOk = overlayProtectionLayer(
                 context = context,
                 inputFile = outApk!!,
@@ -2591,22 +2611,30 @@ private suspend fun processFrostShellApk(
                 disguiseSoName = frostOptions.disguiseSoName,
                 addLog = addLog,
                 detailLog = detailLog,
-                onProgress = { p -> onProgress(0.9f + 0.1f * p) }
+                onProgress = { p -> onProgress(0.9f + 0.1f * p) },
+                onOutputSaved = { uri -> mediaStoreUri = uri }
             )
             outApk!!.delete()
-            if (!overlayOk || !outputFile.exists() || outputFile.length() <= 0) {
+            val deliveredByMediaStore = mediaStoreUri != null
+            if (!overlayOk) {
                 addLog("叠加保护层未生成有效输出 APK", LogType.ERROR)
                 stages.finish()
                 return@withContext ProcessResult(false, "", 0, "", 0f)
             }
-            val sizeDiff = outputFile.length() - sourceInputSize
+            if (!deliveredByMediaStore && (!outputFile.exists() || outputFile.length() <= 0)) {
+                addLog("叠加保护层未生成有效输出 APK", LogType.ERROR)
+                stages.finish()
+                return@withContext ProcessResult(false, "", 0, "", 0f)
+            }
+            val realSize = if (deliveredByMediaStore) sourceInputSize else outputFile.length()
+            val sizeDiff = realSize - sourceInputSize
             val diffStr = if (sizeDiff >= 0) "+$sizeDiff" else "$sizeDiff"
             val elapsed = System.currentTimeMillis() - t0
-            val mb = outputFile.length() / (1024f * 1024f)
-            addLog("引擎完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节", LogType.SUCCESS)
+            val mb = realSize / (1024f * 1024f)
+            addLog("引擎完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节${if (deliveredByMediaStore) "，已存系统下载" else ""}", LogType.SUCCESS)
             onProgress(1f)
             stages.finish()
-            ProcessResult(true, outputFile.absolutePath, outputFile.length(), diffStr, 1f)
+            ProcessResult(true, mediaStoreUri ?: outputFile.absolutePath, realSize, diffStr, 1f)
         } else {
             addLog("引擎未生成有效输出 APK${if (engineError != null) ": $engineError" else ""}", LogType.ERROR)
             stages.finish()
@@ -2632,7 +2660,8 @@ private fun overlayProtectionLayer(
     disguiseSoName: String?,
     addLog: (String, LogType) -> Unit,
     detailLog: (String) -> Unit,
-    onProgress: (Float) -> Unit
+    onProgress: (Float) -> Unit,
+    onOutputSaved: ((String) -> Unit)? = null
 ): Boolean {
     return try {
         val allFeatures = hardening + protection
@@ -2867,9 +2896,15 @@ private fun overlayProtectionLayer(
         inputFile.delete()
 
         if (!signEnabled) {
-            intermediateFile.copyTo(outputFile, overwrite = true)
+            val saved = OutputSettings.copyOutput(context, intermediateFile, outputFile) { uri ->
+                addLog("共享目录不可直写，已保存至系统下载(MediaStore): $uri", LogType.WARNING)
+                onOutputSaved?.invoke(uri)
+            }
             intermediateFile.delete()
-            addLog("叠加完成，输出未签名APK (规则注入 ${enabledFeatures.size}项)", LogType.SUCCESS)
+            addLog(
+                "叠加完成，输出未签名APK (规则注入 ${enabledFeatures.size}项)${if (saved == null) "，已存系统下载" else ""}",
+                LogType.SUCCESS
+            )
             return true
         }
         if (signKey == null || signCert == null) {
@@ -2891,7 +2926,10 @@ private fun overlayProtectionLayer(
             return false
         }
         try {
-            signedTmp.copyTo(outputFile, overwrite = true)
+            val saved = OutputSettings.copyOutput(context, signedTmp, outputFile) { uri ->
+                addLog("共享目录不可直写，已保存至系统下载(MediaStore): $uri", LogType.WARNING)
+                onOutputSaved?.invoke(uri)
+            }
         } finally {
             runCatching { if (signedTmp.exists()) signedTmp.delete() }
         }

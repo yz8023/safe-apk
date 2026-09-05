@@ -1,9 +1,12 @@
 package com.adfxcbnm.hardeningtool
 
+import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import java.io.File
 
 object OutputSettings {
@@ -119,5 +122,49 @@ object OutputSettings {
         val fallback = defaultDir(context)
         if (!fallback.exists()) fallback.mkdirs()
         return Pair(fallback, "默认目录")
+    }
+
+    /**
+     * 复制加固产物到目标文件。优先直接 File.copyTo；
+     * 若目标位于公共共享目录(如 /storage/emulated/0/Download)因 scoped storage 限制
+     * 无法以 File 方式覆盖(ENOENT/EACCES)，回退 MediaStore.Downloads 写入。
+     * @return 实际落盘的 [File]，若经 MediaStore 落盘则路径可能为 content:// 对应位置返回 null 同时通过 [fallbackPath] 回传。
+     */
+    fun copyOutput(
+        context: Context,
+        src: File,
+        dest: File,
+        onFallback: ((String) -> Unit)? = null
+    ): File? {
+        if (src == dest) return dest
+        try {
+            src.copyTo(dest, overwrite = true)
+            return dest
+        } catch (e: Exception) {
+            // File 写入共享目录失败，尝试 MediaStore.Downloads
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+            return try {
+                val resolver = context.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, dest.name)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                val uri: Uri = resolver.insert(collection, values)
+                    ?: return null
+                resolver.openOutputStream(uri)?.use { out ->
+                    src.inputStream().use { ins -> ins.copyTo(out) }
+                } ?: return null
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                onFallback?.invoke(uri.toString())
+                null
+            } catch (e2: Exception) {
+                null
+            }
+        }
     }
 }
