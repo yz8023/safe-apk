@@ -65,3 +65,12 @@ Entries discovered by the Agent during task execution should follow this format:
   - `Iterable.debugItems` 无 `isNotEmpty()`，用 `.any()` 判空。
   - 编译命令：`cd /tmp/opencode/merge/android/AndroidHardeningTool && ./gradlew :app:assembleDebug --no-daemon --offline`；内存上限 3.5GiB(45%)，CPU 300%，约 47s-1m49s；产物校验用 `aapt dump badging app-debug.apk` 看 versionName/versionCode。
   - Jar 编译类路径（compileDebugKotlin 的 KCP）会引用 `app/libs/ironshell-deps.jar` 的 AGP transformed 快照（`ironshell-deps_jar-snapshot.bin`），其内容与源 jar 直接 javap 观察存在差异，排查接口签名异常时以「编译报错提示的成员」为准。
+
+[Project Knowledge Summary]
+- Date: 2026-09-05
+- Context: Discovered by Agent while performing v9.10.2 真机 OOM 与伪装失败的修复
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 委托式 `RewrittenClassDef`/`RewrittenDexFile` 已抽取为共享顶层类（`app/src/main/java/com/adfxcbnm/frostshell/dex/RewrittenDexFile.kt`），后续任何 dex 重建 pass（字符串加密/keep-classes split/伪装 so 改名/反射注入）必须复用它们，不得再直接 `ImmutableClassDef`+`ImmutableDexFile`（内部会对整 dex 全量 immutable 化 + TreeSet 排序 + 遍历全部指令，真机 512MB 堆 OOM）。
+  - 真机加固工具（MainActivity）的 `FrostShellEngine.prepare` 会在每次加固前从 assets 强制重装 `shell-files`（filesDir 跨会话持久化，上次随机化/伪装/OOM 中断可能改写 dex 引用与 so 名导致失配），排查「伪装加固找不到壳库 so」时先确认 assets 基线（`frostshell/dex/classes.dex` 引用 `lib8012d9ae47c7f010.so`，libs 各 ABI 同名一致）。
+  - 发布流程：`git push` 分支 → `git tag vX.Y.Z` + push tag → `gh release create vX.Y.Z`（本环境 gh CLI 走 `[bot]` token）→ `gh release upload` 附件 → `gh release edit` 用 `--notes-file` 写 body；注意 zsh 反引号会触发命令替换，release notes 含 backtick 或特殊符号时必须用 `--notes-file` 而非内联参数。
