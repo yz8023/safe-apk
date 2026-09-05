@@ -142,21 +142,16 @@ object FrostReflectionClinitInjector {
 
     private fun injectHelperCall(method: Method, helperRef: ImmutableMethodReference): Method {
         val implementation = method.implementation ?: return method
-        val originalInstructions = toInstructionList(implementation.instructions)
-        val newInstructions = ArrayList<Instruction>()
-        val invokeHelper = ImmutableInstruction35c(Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0, helperRef)
-        for (i in 0 until originalInstructions.size - 1) {
-            newInstructions.add(originalInstructions[i])
-        }
-        newInstructions.add(invokeHelper)
-        newInstructions.add(originalInstructions[originalInstructions.size - 1])
-        val newImplementation = ImmutableMethodImplementation(
-            implementation.registerCount, newInstructions, implementation.tryBlocks,
-            Collections.emptyList()
+        // MutableMethodImplementation 复制会将 offset 指令转为 label 式 builder 指令，
+        // 插入 invoke 后自动重算全部跳转偏移，避免 backed 指令偏移错位（ART VerifyError）。
+        val mutable = MutableMethodImplementation(implementation)
+        mutable.addInstruction(
+            mutable.instructions.size - 1,
+            BuilderInstruction35c(Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0, helperRef)
         )
         return ImmutableMethod(
             method.definingClass, method.name, method.parameters, method.returnType, method.accessFlags,
-            method.annotations, method.hiddenApiRestrictions, newImplementation
+            method.annotations, method.hiddenApiRestrictions, mutable
         )
     }
 
