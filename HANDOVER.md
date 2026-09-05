@@ -14,7 +14,7 @@
 - **技术栈**：Kotlin 1.9.20（App 壳层 + FrostShell 引擎，包 `com.adfxcbnm.frostshell.*`）+ C++17（原生保护库 `protection.cpp`）+ Compose（Material3）UI。
 - **minSdk / targetSdk**：`26` / `34`（Android 8.0 - Android 14）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
-- **当前版本**：`9.7.0`（versionCode 39）。
+- **当前版本**：`9.9.0`（versionCode 41）。
 - **commit 哈希**：`3611559`（`feat: L1字符串加密与SO命名黑名单约束，版本提升至v9.7.0`）。
 - **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260902-fix-manifest-resource-id`，PR #1）。
 
@@ -104,12 +104,15 @@ rm -rf app/.cxx
   - 方法级抽取（仅抽取指定函数）：`FrostProtectRules.memberRules` 按 类名.方法名/类名.* 过滤，未命中方法保留原始指令不进入指令池（`FrostDexUtils.extractAllMethods`），UI 入口在 FrostShell 引擎选项"仅抽取指定函数"。
   - 加固类型选择 UI（FrostShell 引擎选项：keep-classes / smaller / verify-sign / ABI 剔除 / SO 随机化 / 伪装 / 字符串加密 / 方法级抽取）。
   - 输出兜底：公共共享目录(如 /storage/emulated/0/Download) File 直写 ENOENT 时经 MediaStore.Downloads 落盘（`OutputSettings.copyOutput`），三条加固链路（传统/叠加/引擎）均接入。
+  - **v9.9.0 方法抽取增强（需求1）**：① `FrostProtectRules` 方法规则支持正则（`.*vip.*` 纯方法名正则、`regex:` 整体正则、类名正则 `Lcom/a/.*;.method`）；② 内置常用关键词模板（会员VIP/敏感业务/数据信息时间等，一键生成规则）+ 自定义方案保存/加载/删除（`MethodRuleTemplate`，prefs JSON）；③ 罗列所选 APK 的方法/类（`ApkMethodScanner`，解析 classes*.dex）+ 搜索/正则过滤 + 勾选生成规则（`MethodBrowserDialog`）。
+  - **v9.9.0 复制兜底强化（需求2）**：`OutputSettings.copyOutput` 多级兜底——① 删除旧目标后 `File.copyTo`；② MediaStore.Downloads（Q+，IS_PENDING+RELATIVE_PATH）；③ 应用专属 downloads 目录。返回值统一为实际落盘路径，落盘位置决定成功判定，彻底消除旧文件残留假成功（`deliveredPath` 三链路统一接入）。
+  - **v9.9.0 伪装加固修复（需求3）**：`SoNameDisguiser.disguise` 先核实 `libs/<abi>/` 下存在与 dex 引用对应的 so 文件，无匹配则不动 dex 并明确报错；多 ABI 改名原子化（任一失败回滚已改名的 so），杜绝"dex 已引用新名却无对应 so"的伪成功。
   - CI：`.github/workflows/build-apk.yml`。
 - **进行中**：（无）
 - **已搁置**：
   - `FrostReflectionClinitInjector`（反射类名混淆注入）OOM 修复中间态已 `git stash`（`stash@{0}`），未提交。
   - native 侧 VMP 解释器 / RC4 SO 解密 / ELF section 注入：仅文档对接点（`docs/NATIVE-DOCKING.md`），未实现。
-- **最近可运行的 commit**：`1c2dce4`（v9.8.0，后续 ENOENT 修复见 git log）。
+- **最近可运行的 commit**：`4936efb`（v9.8.0，MediaStore 兜底），v9.9.0 见 git log。
 
 ## 7. 待开发内容
 
@@ -159,7 +162,7 @@ MainActivity (UI + 开关) → FrostEngineOptions → FrostShellEngine.protectAp
 
 ```
 app/
-├── build.gradle.kts               # v9.7.0 / versionCode 39
+├── build.gradle.kts               # v9.9.0 / versionCode 41
 ├── libs/ironshell-deps.jar        # FrostShell 引擎字节码依赖（11.8MB，必需）
 └── src/main/
     ├── AndroidManifest.xml
@@ -222,7 +225,7 @@ app/
 
 ## 14. 验收标准
 
-1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.7.0' versionCode='39'`）。
+1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.9.0' versionCode='41'`）。
 2. **运行**：安装并启动到首页，能选择 APK 并完成一次加固，产物可安装运行。
 3. **CI**：push 到 `main` 后 `.github/workflows/build-apk.yml` 自动构建出 debug APK 并上传 artifact。
-4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.7.0_debug.apk`。
+4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.9.0_debug.apk`。
