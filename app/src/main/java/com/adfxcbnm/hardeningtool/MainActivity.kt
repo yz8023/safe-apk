@@ -526,6 +526,84 @@ fun MainScreen() {
 
                 Spacer(Modifier.height(10.dp))
 
+                // 函数抽取卡片
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = CircleShape,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text("函数抽取", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    frostMethodFilterEnabled = !frostMethodFilterEnabled
+                                    prefs.edit().putBoolean("frost_method_filter_enabled", frostMethodFilterEnabled).apply()
+                                    if (frostMethodFilterEnabled) {
+                                        methodFilterInput = frostMethodFilterRules
+                                        showMethodFilterDialog = true
+                                    }
+                                },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("仅抽取指定函数", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (frostMethodFilterEnabled) {
+                                        "方法级抽取 (已配置${frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.count()}条规则)，未命中函数保留明文"
+                                    } else {
+                                        "方法级抽取：只抽取关键函数，其余保留"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = frostMethodFilterEnabled,
+                                onCheckedChange = {
+                                    frostMethodFilterEnabled = it
+                                    prefs.edit().putBoolean("frost_method_filter_enabled", it).apply()
+                                    if (it) {
+                                        methodFilterInput = frostMethodFilterRules
+                                        showMethodFilterDialog = true
+                                    }
+                                }
+                            )
+                        }
+                        if (frostMethodFilterEnabled) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    methodFilterInput = frostMethodFilterRules
+                                    showMethodFilterDialog = true
+                                },
+                                modifier = Modifier.fillMaxWidth().height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("配置抽取规则", fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
                 // Feature Sections
                 FeatureSection(
                     title = "加固",
@@ -3500,17 +3578,17 @@ fun MethodBrowserDialog(
                         }
                         Spacer(Modifier.height(8.dp))
                         LazyColumn(modifier = Modifier.height(260.dp)) {
-                            items(filtered.take(500), key = { it.display }) { entry ->
+                            items(filtered.take(500), key = { it.uniqueKey }) { entry ->
                                 if (!onlyNonEmpty || entry.methodName != "<init>" && entry.methodName != "<clinit>") {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Checkbox(
-                                            checked = entry.display in selected,
+                                            checked = entry.uniqueKey in selected,
                                             onCheckedChange = {
-                                                selected = if (it) selected + entry.display
-                                                else selected - entry.display
+                                                selected = if (it) selected + entry.uniqueKey
+                                                else selected - entry.uniqueKey
                                             }
                                         )
                                         Text(
@@ -3535,21 +3613,19 @@ fun MethodBrowserDialog(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
+                                    val entryByKey = scanResult?.entries?.associateBy { it.uniqueKey } ?: emptyMap()
+                                    val selectedEntries = selected.mapNotNull { entryByKey[it] }
                                     val rules: List<String> = when (mode) {
-                                        0 -> selected.sorted().map { it }
-                                        1 -> selected.map {
-                                            val idx = it.lastIndexOf('.')
-                                            if (idx > 0) it.substring(0, idx) + ".*" else it
+                                        0 -> selectedEntries.sortedBy { it.display }.map { it.toRule() }
+                                        1 -> selectedEntries.map {
+                                            val idx = it.className.length
+                                            it.className + ".*"
                                         }
                                         else -> {
                                             val words = LinkedHashSet<String>()
-                                            selected.forEach { s ->
-                                                val idx = s.lastIndexOf('.')
-                                                if (idx > 0) {
-                                                    val m = s.substring(idx + 1)
-                                                    val word = Regex("^([a-zA-Z0-9_]+)").find(m)?.groupValues?.get(0) ?: m
-                                                    if (word.length >= 2) words.add(word)
-                                                }
+                                            selectedEntries.forEach { entry ->
+                                                val word = Regex("^([a-zA-Z0-9_]+)").find(entry.methodName)?.groupValues?.get(0) ?: entry.methodName
+                                                if (word.length >= 2) words.add(word)
                                             }
                                             words.sorted().map { ".*$it.*" }
                                         }

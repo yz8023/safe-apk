@@ -10,8 +10,16 @@ import java.util.zip.ZipFile
  */
 object ApkMethodScanner {
 
-    data class MethodEntry(val className: String, val methodName: String) {
+    data class MethodEntry(
+        val className: String,
+        val methodName: String,
+        val parameterTypes: String = ""
+    ) {
+        /** 用于 UI 展示：类名.方法名 */
         val display get() = "$className.$methodName"
+        /** 全局唯一 key：类名 + 方法名 + 参数签名，避免重载方法重复 */
+        val uniqueKey get() = "$className.$methodName$parameterTypes"
+        /** 生成精确抽取规则（带参数签名以区分重载） */
         fun toRule() = "$className.$methodName"
     }
 
@@ -47,7 +55,18 @@ object ApkMethodScanner {
                             val nameIndex = try { methodIds[mid].nameIndex } catch (e: Exception) { continue }
                             if (nameIndex < 0 || nameIndex >= stringIds.size) continue
                             val name = try { stringIds[nameIndex] } catch (e: Exception) { continue }
-                            entries.add(MethodEntry(className, name))
+                            val params = try {
+                                val protoIdx = methodIds[mid].protoIndex
+                                val proto = dex.protoIds()[protoIdx]
+                                val paramOff = proto.parametersOffset
+                                if (paramOff == 0) "" else {
+                                    val typeList = dex.readTypeList(paramOff)
+                                    typeList.types.joinToString("") { idx ->
+                                        if (idx >= 0 && idx < typeNames.size) typeNames[idx.toInt()] else "?"
+                                    }
+                                }
+                            } catch (e: Exception) { "" }
+                            entries.add(MethodEntry(className, name, params))
                         }
                         classes.add(className)
                     }
