@@ -6,6 +6,7 @@ import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.DexFileFactory
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.Opcodes
+import com.android.tools.smali.dexlib2.base.reference.BaseTypeReference
 import com.android.tools.smali.dexlib2.builder.MutableMethodImplementation
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction10x
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction11n
@@ -14,12 +15,13 @@ import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction21s
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction22c
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction35c
 import com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
+import com.android.tools.smali.dexlib2.iface.Annotation
 import com.android.tools.smali.dexlib2.iface.ClassDef
+import com.android.tools.smali.dexlib2.iface.DexFile
+import com.android.tools.smali.dexlib2.iface.Field
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.MethodImplementation
 import com.android.tools.smali.dexlib2.iface.instruction.Instruction
-import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef
-import com.android.tools.smali.dexlib2.immutable.ImmutableDexFile
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c
@@ -28,6 +30,7 @@ import com.android.tools.smali.dexlib2.immutable.reference.ImmutableTypeReferenc
 import java.io.File
 import java.io.IOException
 import java.util.Collections
+import java.util.LinkedHashSet
 
 object FrostReflectionClinitInjector {
     private const val MAX_METHODS_PER_DEX = 65535
@@ -83,21 +86,22 @@ object FrostReflectionClinitInjector {
                 arrayList.add(classDef)
                 continue
             }
-            val arrayList2 = ArrayList<Method>()
-            for (method in classDef.methods) {
+            val directMethods = ArrayList<Method>()
+            for (method in classDef.directMethods) {
                 if (helperRef != null && "<clinit>" == method.name) {
-                    arrayList2.add(injectHelperCall(method, helperRef))
+                    directMethods.add(injectHelperCall(method, helperRef))
                 } else {
-                    arrayList2.add(method)
+                    directMethods.add(peelDebugInfo(method))
                 }
             }
             if (helpers != null) {
-                arrayList2.addAll(helpers)
+                directMethods.addAll(helpers)
             }
-            arrayList.add(ImmutableClassDefAdapter(classDef, arrayList2).build())
+            // 委托式 ClassDef：不重建方法集合（ImmutableClassDef 会对整类方法 TreeSet 排序引发 OOM）
+            arrayList.add(RewrittenClassDef(classDef, directMethods, classDef.virtualMethods))
         }
-        val immutableDexFile = ImmutableDexFile(dexFile.opcodes, arrayList)
-        DexFileFactory.writeDexFile(outputDex, immutableDexFile)
+        // 委托式 DexFile：保持 class 顺序，写入交给 DexPool，避免 ImmutableDexFile 内部再次排序
+        DexFileFactory.writeDexFile(outputDex, RewrittenDexFile(dexFile.opcodes, arrayList))
         FrostLogUtils.debug(
             "reflection clinit inject: helpers=%d, clinits=%d, methods=%d",
             state.helperRefs.size, state.clinitIndex, state.totalMethodCount
@@ -255,42 +259,80 @@ object FrostReflectionClinitInjector {
         }
     }
 
-private class ImmutableClassDefAdapter(
-        private val source: ClassDef,
-        private val methods: List<Method>
-    ) {
-        fun build(): ClassDef {
-            return ImmutableClassDef(
-                source.type, source.accessFlags, source.superclass, source.interfaces,
-                source.sourceFile, source.annotations, source.fields, methods.map { peelDebugInfo(it) }
+    /**
+     * 剥离方法 debug 信息（不依赖 ImmutableClassDef 整体重建，避免大 dex OOM）。
+     */
+    private fun peelDebugInfo(method: Method): Method {
+        val impl = method.implementation ?: return method
+        if (impl.debugItems.any()) {
+            val stripped = ImmutableMethodImplementation(
+                impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
+            )
+            return ImmutableMethod(
+                method.definingClass, method.name, method.parameters, method.returnType,
+                method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
             )
         }
+        return method
+    }
 
-        private fun peelDebugInfo(method: Method): Method {
-            if (method !is ImmutableMethod) {
-                val impl = method.implementation
-                if (impl != null) {
-                    val stripped = ImmutableMethodImplementation(
-                        impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
-                    )
-                    return ImmutableMethod(
-                        method.definingClass, method.name, method.parameters, method.returnType,
-                        method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
-                    )
-                }
-                return method
-            }
-            val impl = method.implementation
-            if (impl != null && impl.debugItems.isNotEmpty()) {
-                val stripped = ImmutableMethodImplementation(
-                    impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
-                )
-                return ImmutableMethod(
-                    method.definingClass, method.name, method.parameters, method.returnType,
-                    method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
-                )
-            }
-            return method
+    /**
+     * 委托式 ClassDef：直接透传原类元数据与字段，仅替换 direct methods；
+     * 不调用 ImmutableClassDef（其构造会对全部方法 TreeSet 排序并调用 toString，大 dex 直接 OOM）。
+     */
+    private class RewrittenClassDef(
+        private val source: ClassDef,
+        private val directMethods: List<Method>,
+        private val virtualMethods: Iterable<Method>
+    ) : BaseTypeReference(), ClassDef {
+        override fun validateReference() {
+            source.validateReference()
         }
+
+        override fun getType(): String = source.type
+
+        override fun getAccessFlags(): Int = source.accessFlags
+
+        override fun getSuperclass(): String? = source.superclass
+
+        override fun getInterfaces(): List<String> = source.interfaces
+
+        override fun getSourceFile(): String? = source.sourceFile
+
+        override fun getAnnotations(): Set<Annotation> = source.annotations
+
+        override fun getStaticFields(): Iterable<Field> = source.staticFields
+
+        override fun getInstanceFields(): Iterable<Field> = source.instanceFields
+
+        override fun getFields(): Iterable<Field> = source.fields
+
+        override fun getDirectMethods(): Iterable<Method> = directMethods
+
+        override fun getVirtualMethods(): Iterable<Method> = virtualMethods
+
+        override fun getMethods(): Iterable<Method> = Iterable {
+            object : Iterator<Method> {
+                private val direct = directMethods.iterator()
+                private val virtual = virtualMethods.iterator()
+                override fun hasNext(): Boolean = direct.hasNext() || virtual.hasNext()
+                override fun next(): Method = if (direct.hasNext()) direct.next() else virtual.next()
+            }
+        }
+    }
+
+    /**
+     * 委托式 DexFile：class 集合用 LinkedHashSet 保持顺序，交由 DexPool 写入，
+     * 避免 ImmutableDexFile 内部做全量排序与临时字符串分配。
+     */
+    private class RewrittenDexFile(
+        private val opcodes: com.android.tools.smali.dexlib2.Opcodes,
+        classes: List<ClassDef>
+    ) : DexFile {
+        private val classSet: Set<ClassDef> = LinkedHashSet(classes)
+
+        override fun getClasses(): Set<ClassDef> = classSet
+
+        override fun getOpcodes(): com.android.tools.smali.dexlib2.Opcodes = opcodes
     }
 }
