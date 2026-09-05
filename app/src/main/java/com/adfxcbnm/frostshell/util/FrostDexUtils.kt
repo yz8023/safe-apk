@@ -192,6 +192,14 @@ object FrostDexUtils {
                         FrostLogUtils.noisy("codeoff 0x%x appear many times", method.codeOffset)
                         continue
                     }
+                    if (!FrostProtectRules.getInstance().shouldExtractMethod(className, dex.strings()[dex.methodIds()[method.methodIndex].nameIndex])) {
+                        FrostLogUtils.noisy(
+                            "method not matched, name = %s.%s (按规则保留原始指令)",
+                            FrostTypeUtils.getHumanizeTypeName(className),
+                            dex.strings()[dex.methodIds()[method.methodIndex].nameIndex]
+                        )
+                        continue
+                    }
                     val instruction = extractMethod(dex, randomAccessFile, classDef, method, smaller)
                     if (instruction == null) continue
                     instructionList.add(instruction)

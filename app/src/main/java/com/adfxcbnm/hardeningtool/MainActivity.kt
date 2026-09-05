@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -159,6 +160,11 @@ fun MainScreen() {
     var frostSoRandomization by remember { mutableStateOf(prefs.getBoolean("frost_so_randomization", false)) }
     var frostStringEncrypt by remember { mutableStateOf(prefs.getBoolean("frost_string_encrypt", false)) }
     var frostStringEncryptMinLen by remember { mutableStateOf(prefs.getInt("frost_string_encrypt_min_len", 6)) }
+    var frostMethodFilterEnabled by remember { mutableStateOf(prefs.getBoolean("frost_method_filter_enabled", false)) }
+    var frostMethodFilterRules by remember {
+        mutableStateOf(prefs.getString("frost_method_filter_rules", "") ?: "")
+    }
+    var showMethodFilterDialog by remember { mutableStateOf(false) }
     var frostDisguiseEnabled by remember { mutableStateOf(prefs.getBoolean("frost_disguise_enabled", false)) }
     var frostDisguiseName by remember { mutableStateOf(prefs.getString("frost_disguise_name", "") ?: "") }
     var showDisguiseDialog by remember { mutableStateOf(false) }
@@ -171,6 +177,7 @@ fun MainScreen() {
     var signAliasInput by remember { mutableStateOf("") }
     var signStorePassInput by remember { mutableStateOf("") }
     var signKeyPassInput by remember { mutableStateOf("") }
+    var methodFilterInput by remember { mutableStateOf("") }
 
     var hardeningExpanded by remember { mutableStateOf(false) }
     var protectionExpanded by remember { mutableStateOf(false) }
@@ -633,7 +640,13 @@ fun MainScreen() {
                             signKeystorePath = signKeystorePath.ifEmpty { null },
                             signAlias = signAlias.ifEmpty { null },
                             signStorePass = signStorePass.ifEmpty { null },
-                            signKeyPass = signKeyPass.ifEmpty { null }
+                            signKeyPass = signKeyPass.ifEmpty { null },
+                            extractMethodRules = if (frostMethodFilterEnabled) {
+                                frostMethodFilterRules.lineSequence()
+                                    .map { it.trim() }
+                                    .filter { it.isNotEmpty() }
+                                    .toList()
+                            } else null
                         )
                         scope.launch {
                             val result = if (useFrostEngine) {
@@ -1342,6 +1355,24 @@ fun MainScreen() {
                         prefs.edit().putBoolean("frost_string_encrypt", it).apply()
                     }
                 )
+                SettingRow(
+                    icon = Icons.Default.FavoriteBorder,
+                    title = "仅抽取指定函数",
+                    subtitle = if (frostMethodFilterEnabled) {
+                        "方法级抽取 (已配置${frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.count()}条规则)，未命中函数保留明文"
+                    } else {
+                        "方法级抽取：只抽取关键函数，其余保留 (extract-method-filter)"
+                    },
+                    checked = frostMethodFilterEnabled,
+                    onCheckedChange = {
+                        frostMethodFilterEnabled = it
+                        prefs.edit().putBoolean("frost_method_filter_enabled", it).apply()
+                        if (it) {
+                            methodFilterInput = frostMethodFilterRules
+                            showMethodFilterDialog = true
+                        }
+                    }
+                )
                 Spacer(Modifier.height(8.dp))
                 Text("剔除 ABI（未勾选的将保留）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -1620,6 +1651,47 @@ fun MainScreen() {
             },
             dismissButton = {
                 TextButton(onClick = { showDisguiseDialog = false }) { Text("关闭") }
+            }
+        )
+    }
+
+    if (showMethodFilterDialog) {
+        AlertDialog(
+            onDismissRequest = { showMethodFilterDialog = false },
+            title = { Text("仅抽取指定函数") },
+            text = {
+                Column {
+                    Text(
+                        "每行一条规则，格式：类全限定名.方法名 或 类全限定名.*（该类全部方法）。" +
+                            "类名使用 dex 内部格式，如 Lcom/example/MainActivity;.onCreate 或 Lcom/example/MainActivity;.*。" +
+                            "仅命中规则的方法被抽取（方法体加密），其余方法保留原始指令。留空表示不启用方法过滤。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = methodFilterInput,
+                        onValueChange = { methodFilterInput = it },
+                        modifier = Modifier.fillMaxWidth().height(200.dp),
+                        label = { Text("方法抽取规则（每行一条）") },
+                        placeholder = { Text("Lcom/example/MainActivity;.onCreate\nLcom/example/SecretApi;.*") },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    frostMethodFilterRules = methodFilterInput.trim()
+                    prefs.edit().putString("frost_method_filter_rules", frostMethodFilterRules).apply()
+                    showMethodFilterDialog = false
+                    addLog(
+                        if (frostMethodFilterRules.isBlank()) "方法过滤已清空（全量抽取）" else "方法过滤规则已保存: ${frostMethodFilterRules.trim().lineSequence().count { it.isNotBlank() }}条",
+                        LogType.INFO
+                    )
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMethodFilterDialog = false }) { Text("取消") }
             }
         )
     }
@@ -2456,6 +2528,7 @@ private suspend fun processFrostShellApk(
         if (frostOptions.verifySign) detailLog("启用: 运行时验签(verify-sign)")
         if (frostOptions.soRandomization) detailLog("启用: 壳SO随机化")
         if (frostOptions.stringEncrypt) detailLog("启用: 字符串加密(L1, minLen=${frostOptions.stringEncryptMinLen}, keywords=${frostOptions.stringEncryptKeywords?.size ?: 0})")
+        if (!frostOptions.extractMethodRules.isNullOrEmpty()) detailLog("启用: 仅抽取指定函数(${frostOptions.extractMethodRules.size}条规则)")
         frostOptions.disguiseSoName?.let { detailLog("启用: 伪装加固(lib$it.so)") }
         frostOptions.excludedAbi?.let { detailLog("启用: 剔除ABI ${it.joinToString(",")}") }
         if (frostOptions.soRandomization) {

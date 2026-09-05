@@ -79,6 +79,11 @@ object FrostShellEngine {
                 this.stringEncryptMinLen(options.stringEncryptMinLen)
                 this.stringEncryptKeywords(options.stringEncryptKeywords)
             }
+        if (options.extractMethodRules != null) {
+            com.adfxcbnm.frostshell.config.FrostProtectRules.setMemberRules(options.extractMethodRules.toTypedArray())
+        } else {
+            com.adfxcbnm.frostshell.config.FrostProtectRules.setMemberRules(emptyArray())
+        }
         builder.build().protect()
         return findOutputApk(outputDir, apkPath)
     }

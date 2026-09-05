@@ -14,5 +14,6 @@ data class FrostEngineOptions(
     val signKeystorePath: String? = null,
     val signAlias: String? = null,
     val signStorePass: String? = null,
-    val signKeyPass: String? = null
+    val signKeyPass: String? = null,
+    val extractMethodRules: List<String>? = null
 )
