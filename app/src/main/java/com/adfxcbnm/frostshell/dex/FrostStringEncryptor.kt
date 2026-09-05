@@ -12,13 +12,21 @@ import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction11n
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction11x
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction12x
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction21c
+import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction21s
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction22b
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction22t
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction23x
+import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction31c
+import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction32x
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction35c
+import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction3rc
 import com.android.tools.smali.dexlib2.iface.ClassDef
+import com.android.tools.smali.dexlib2.iface.ExceptionHandler
 import com.android.tools.smali.dexlib2.iface.Method
+import com.android.tools.smali.dexlib2.iface.MethodImplementation
 import com.android.tools.smali.dexlib2.iface.MethodParameter
+import com.android.tools.smali.dexlib2.iface.TryBlock
+import com.android.tools.smali.dexlib2.iface.debug.DebugItem
 import com.android.tools.smali.dexlib2.iface.instruction.Instruction
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
@@ -166,6 +174,11 @@ object FrostStringEncryptor {
 
         /**
          * 改写一个方法，返回新方法或 null（无改动）。
+         *
+         * 使用 MutableMethodImplementation(MethodImplementation) 复制方法体：其内部会把
+         * 所有 offset 指令（goto/if/switch 等）经 codeAddress 映射转为 label 式 builder
+         * 指令，插入/替换后由 fixInstructions 统一重算跳转偏移。直接拼接 backed 指令会
+         * 保留原始 codeOffset，插入新指令后将导致跳转目标错位（ART VerifyError）。
          */
         fun rewriteMethod(method: Method): Method? {
             val impl = method.implementation ?: return null
@@ -187,46 +200,46 @@ object FrostStringEncryptor {
             val keyReg = baseRegs + 1
             val newRegCount = baseRegs + 2
 
-            val newInstructions = ArrayList<Instruction>()
-            var index = 0
-            for (instruction in original) {
-                if (targetIndexes.contains(index)) {
-                    val value = ((instruction as ReferenceInstruction).reference as StringReference).string
-                    val origReg = (instruction as OneRegisterInstruction).registerA
-                    newInstructions.addAll(emitDecryptCall(origReg, tmpReg, keyReg, value))
-                    replacements++
+            val mutable = MutableMethodImplementation(impl)
+            for (i in targetIndexes.size - 1 downTo 0) {
+                val index = targetIndexes[i]
+                val instr = mutable.instructions[index]
+                val value = (instr as ReferenceInstruction).reference as StringReference? ?: return null
+                val origReg = (instr as OneRegisterInstruction).registerA
+                val key = FrostStringXorCipher.randomKey()
+                val cipher = FrostStringXorCipher.encrypt(value.string, key)
+                val reference = ImmutableStringReference(cipher)
+                // 替换 const-string 为密文常量
+                if (tmpReg <= 0xFF) {
+                    mutable.replaceInstruction(index, BuilderInstruction21c(Opcode.CONST_STRING, tmpReg, reference))
                 } else {
-                    newInstructions.add(instruction)
+                    mutable.replaceInstruction(index, BuilderInstruction31c(Opcode.CONST_STRING_JUMBO, tmpReg, reference))
                 }
-                index++
+                // 剩余 4 条以 (index+1) 为锚点倒序插入，保证最终序列：
+                // ins1 const/16 key, ins2 invoke-static/range, ins3 move-result-object, ins4 move-object/16
+                val rest = listOf(
+                    BuilderInstruction21s(Opcode.CONST_16, keyReg, key),
+                    BuilderInstruction3rc(Opcode.INVOKE_STATIC_RANGE, tmpReg, 2, helperRef),
+                    BuilderInstruction11x(Opcode.MOVE_RESULT_OBJECT, tmpReg),
+                    BuilderInstruction32x(Opcode.MOVE_OBJECT_16, origReg, tmpReg)
+                )
+                for (ins in rest.asReversed()) {
+                    mutable.addInstruction(index + 1, ins)
+                }
+                replacements++
             }
-            val finalImpl = ImmutableMethodImplementation(
-                newRegCount, newInstructions, Collections.emptyList(), Collections.emptyList()
-            )
+
+            // Mutable 的 registerCount 是 private final，用 facade 提升寄存器数以容纳临时寄存器
+            val regBumped = object : MethodImplementation {
+                override fun getRegisterCount(): Int = newRegCount
+                override fun getInstructions(): Iterable<Instruction> = mutable.instructions
+                override fun getTryBlocks(): List<TryBlock<out ExceptionHandler>> = mutable.tryBlocks
+                override fun getDebugItems(): Iterable<DebugItem> = mutable.debugItems
+            }
             return ImmutableMethod(
                 method.definingClass, method.name, method.parameters, method.returnType,
-                method.accessFlags, method.annotations, method.hiddenApiRestrictions, finalImpl
+                method.accessFlags, method.annotations, method.hiddenApiRestrictions, regBumped
             )
-        }
-
-        private fun emitDecryptCall(origReg: Int, tmpReg: Int, keyReg: Int, value: String): List<Instruction> {
-            val out = ArrayList<Instruction>()
-            val key = FrostStringXorCipher.randomKey()
-            val cipher = FrostStringXorCipher.encrypt(value, key)
-            val reference = ImmutableStringReference(cipher)
-            if (tmpReg <= 0xFF) {
-                out.add(ImmutableInstruction21c(Opcode.CONST_STRING, tmpReg, reference))
-            } else {
-                out.add(ImmutableInstruction31c(Opcode.CONST_STRING_JUMBO, tmpReg, reference))
-            }
-            // const/16 vKey, key：keyReg 用 16 位字面量指令，天然兼容高寄存器
-            out.add(ImmutableInstruction21s(Opcode.CONST_16, keyReg, key))
-            // invoke-static/range {vTmp, vKey}, helper  (3rc 支持 8 位/高寄存器)
-            out.add(ImmutableInstruction3rc(Opcode.INVOKE_STATIC_RANGE, tmpReg, 2, helperRef))
-            out.add(ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, tmpReg))
-            // move-object/16 vOrig, vTmp
-            out.add(ImmutableInstruction32x(Opcode.MOVE_OBJECT_16, origReg, tmpReg))
-            return out
         }
 
         private fun isSensitive(value: String): Boolean {
