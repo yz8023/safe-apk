@@ -14,8 +14,8 @@
 - **技术栈**：Kotlin 1.9.20（App 壳层 + FrostShell 引擎，包 `com.adfxcbnm.frostshell.*`）+ C++17（原生保护库 `protection.cpp`）+ Compose（Material3）UI。
 - **minSdk / targetSdk**：`26` / `34`（Android 8.0 - Android 14）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
-- **当前版本**：`9.9.0`（versionCode 41）。
-- **commit 哈希**：`3611559`（`feat: L1字符串加密与SO命名黑名单约束，版本提升至v9.7.0`）。
+- **当前版本**：`9.10.1`（versionCode 43）。
+- **commit 哈希**：`bf6145b`（v9.10.0），`v9.10.1` 为进行中变更。
 - **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260902-fix-manifest-resource-id`，PR #1）。
 
 ## 2. 开发环境
@@ -107,18 +107,22 @@ rm -rf app/.cxx
   - **v9.9.0 方法抽取增强（需求1）**：① `FrostProtectRules` 方法规则支持正则（`.*vip.*` 纯方法名正则、`regex:` 整体正则、类名正则 `Lcom/a/.*;.method`）；② 内置常用关键词模板（会员VIP/敏感业务/数据信息时间等，一键生成规则）+ 自定义方案保存/加载/删除（`MethodRuleTemplate`，prefs JSON）；③ 罗列所选 APK 的方法/类（`ApkMethodScanner`，解析 classes*.dex）+ 搜索/正则过滤 + 勾选生成规则（`MethodBrowserDialog`）。
   - **v9.9.0 复制兜底强化（需求2）**：`OutputSettings.copyOutput` 多级兜底——① 删除旧目标后 `File.copyTo`；② MediaStore.Downloads（Q+，IS_PENDING+RELATIVE_PATH）；③ 应用专属 downloads 目录。返回值统一为实际落盘路径，落盘位置决定成功判定，彻底消除旧文件残留假成功（`deliveredPath` 三链路统一接入）。
   - **v9.9.0 伪装加固修复（需求3）**：`SoNameDisguiser.disguise` 先核实 `libs/<abi>/` 下存在与 dex 引用对应的 so 文件，无匹配则不动 dex 并明确报错；多 ABI 改名原子化（任一失败回滚已改名的 so），杜绝"dex 已引用新名却无对应 so"的伪成功。
+  - **v9.10.1 方法浏览器重复 key 崩溃修复（需求4）**：`ApkMethodScanner.scan` 对扫描结果按 `MethodEntry.uniqueKey` 去重，杜绝同一类方法（多 dex 重复声明）在 `LazyColumn items(key=...)` 撞 key 导致 `IllegalArgumentException: Key ... was already used`。
+  - **v9.10.0 崩溃修复（需求1-3）**：
+    - ① `FrostReflectionClinitInjector` 反射类名注入 OOM 修复：主循环改用 `Array<ClassDef>`，命中反射 clinit 的类经委托式 `RewrittenClassDef` 透传（不再重建 `ImmutableClassDef`，规避 dexlib2 TreeSet 排序+toString 的 512MB 堆打满）；写入用 `RewrittenDexFile`（`LinkedHashSet` 保持顺序，规避 `ImmutableDexFile` 全量排序）；`getMethods()` 合并 direct+virtual 迭代器；新增 `peelDebugInfo` 剥离 debugItems 不触发整体重建。
+    - ② Compose 动画/首页 OOM 缓解：随第一组 OOM 链路修复（dex 线程不再打满堆 → GC 压力下降 → UI 动画不再被挤压 OOM）。
+    - ③ `MethodBrowserDialog` LazyColumn 重复 key 崩溃修复：`MethodEntry` 增加 `parameterTypes`（解析 `protoIds().parametersOffset` 类型列表）与全局唯一 `uniqueKey`（类名.方法名+参数签名），`items(key={it.uniqueKey})`、选中集与规则生成全部改用 `uniqueKey`，消除方法重载导致的 key 冲突。
+    - 首页「函数抽取」上移：新增独立卡片（选 APK 后即见），内置「仅抽取指定函数」开关+已配置规则数摘要+「配置抽取规则」按钮（打开方法浏览器），同时保留设置页 FrostShell 引擎选项内的高级配置入口；版本提升至 v9.10.0。
   - CI：`.github/workflows/build-apk.yml`。
 - **进行中**：（无）
 - **已搁置**：
-  - `FrostReflectionClinitInjector`（反射类名混淆注入）OOM 修复中间态已 `git stash`（`stash@{0}`），未提交。
   - native 侧 VMP 解释器 / RC4 SO 解密 / ELF section 注入：仅文档对接点（`docs/NATIVE-DOCKING.md`），未实现。
-- **最近可运行的 commit**：`4936efb`（v9.8.0，MediaStore 兜底），v9.9.0 见 git log。
+- **最近可运行的 commit**：`bf6145b`（v9.10.0）；v9.10.1 工作区构建已验证（`assembleDebug` 通过，待提交）。
 
 ## 7. 待开发内容
 
 | 功能 | 优先级 | 预估工时 | 前置依赖 |
 |------|--------|----------|----------|
-| FrostReflectionClinitInjector 恢复并修复 OOM | P1 | 4h | 恢复 `stash@{0}`，重建 dex 字符串池写入逻辑 |
 | native VMP 指令解释器接入 | P2 | 16h | NDK 环境 + `docs/NATIVE-DOCKING.md` §2 方案 |
 | native RC4 SO 解密 + 自校验 | P2 | 8h | `docs/NATIVE-DOCKING.md` §3 |
 | ELF section 注入（vmp.bin） | P3 | 8h | `docs/NATIVE-DOCKING.md` §4 |
@@ -162,7 +166,7 @@ MainActivity (UI + 开关) → FrostEngineOptions → FrostShellEngine.protectAp
 
 ```
 app/
-├── build.gradle.kts               # v9.9.0 / versionCode 41
+├── build.gradle.kts               # v9.10.1 / versionCode 43
 ├── libs/ironshell-deps.jar        # FrostShell 引擎字节码依赖（11.8MB，必需）
 └── src/main/
     ├── AndroidManifest.xml
@@ -225,7 +229,7 @@ app/
 
 ## 14. 验收标准
 
-1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.9.0' versionCode='41'`）。
+1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.10.1' versionCode='43'`）。
 2. **运行**：安装并启动到首页，能选择 APK 并完成一次加固，产物可安装运行。
 3. **CI**：push 到 `main` 后 `.github/workflows/build-apk.yml` 自动构建出 debug APK 并上传 artifact。
-4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.9.0_debug.apk`。
+4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.10.1_debug.apk`。
