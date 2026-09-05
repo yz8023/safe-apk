@@ -31,6 +31,7 @@ object ApkMethodScanner {
 
     fun scan(apkFile: File): ScanResult {
         val entries = ArrayList<MethodEntry>()
+        val seen = HashSet<String>()
         val classes = HashSet<String>()
         ZipFile(apkFile).use { zip ->
             val dexFiles = zip.entries().asSequence()
@@ -66,7 +67,10 @@ object ApkMethodScanner {
                                     }
                                 }
                             } catch (e: Exception) { "" }
-                            entries.add(MethodEntry(className, name, params))
+                            val entry = MethodEntry(className, name, params)
+                            if (seen.add(entry.uniqueKey)) {
+                                entries.add(entry)
+                            }
                         }
                         classes.add(className)
                     }
