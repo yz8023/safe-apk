@@ -125,3 +125,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - manifest 去重范式：解析 AXML 后先查 `elements.any { name=="provider" && isStart && attrs 含 name 属性值为 com.adfxcbnm.protect.SecurityCheckProvider }`，已存在则找出所有重复 provider 的 start+对应 end 索引对（providerStartIdxs + 深度匹配）一并移除只留第一个；验证用 aapt dump xmltree 数 provider 出现次数。
   - 诊断用户上传 APK 是否被本工具处理过：查 `assets/features.cfg`（含 `# ADFXCBNM Feature Configuration` 头与 version=）、`assets/protection_config.dat`（magic `ADFXCBNM_CFG_V9x`）、`assets/protection_manifest.json`（apk_size/apk_hash）、签名者 DN 是否 `CN=ADFXCBNM Debug`；features.cfg 内 `signature_sha256` 必然等于该 APK 实际签名 digest（apksigner verify --print-certs）。两个 APK 签名 digest 不同会导致升级安装 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
   - 验证工具修改的离线方法：编译产物在 `app/build/tmp/kotlin-classes/debug/`，用 javac 写调用 `AndroidManifestModifier.INSTANCE.modifyManifest(byte[],Context,List<String>,String,Function1,List<ApplicationAttrPatch>)` 的 driver（classpath 加 kotlin-stdlib 与 android.jar），对真实提取的 AndroidManifest.xml 二进制跑改前改后对比 + aapt dump xmltree 校验。
+
+[Project Knowledge Summary]
+- Date: 2026-09-07
+- Context: Discovered by Agent while diagnosing 勾选 FrostShell 加固后必闪退且无注入崩溃日志（用户反馈 v9.10.7 后仍复现）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - FrostShell 壳 + ADFXCBNM 叠加层双保护冲突是"勾选 FrostShell 必闪退、无 crash log"的根因。壳 native 库 libvenSec.so 内置 ByteHook（strings 可见 libbytehook.so/bytehook-plt-trampolines/"hook chain ... GOT REPLACE"），运行时对 open/read/write/mmap/mprotect/dlopen/dlsym/kill 等做 GOT/PLT hook；叠加层 SecurityCheckProvider 的 anti_hook(checkHookEnhanced→hookCheckFunctionPrologue+detectLibcHook)、anti_inject(checkInjection)、runtime_protect 检测到 libc 函数头被改写/进程被 hook，命中 CRITICAL 集合（hook/inject/code_inject/runtime_protect）→ enforce→triggerKill→nativeKill→kill(getpid(), SIGKILL)。
+  - SIGKILL 无法被已安装的 crash handler 捕获（只注册了 SIGSEGV/ABRT/BUS/ILL/FPE/TRAP），所以无 adfxcbnm_crash.log、无 tombstone、无注入日志——这解释了"闪退但无任何日志"。
+  - features.cfg 中 signature_sha256 取自 signEnabled 时加载的 signCert 证书 hash（MainActivity 2300 行），叠加签名用同一 signKey/signCert，故 sig_verify 自洽；真正冲突点是 anti_hook/anti_inject/runtime_protect/code_inject 对壳自身行为的误判。
+  - 修复方向：工具 UI 启用 FrostShell 壳时，自动从 enabledFeatures 剔除/弱化 anti_hook、anti_inject、runtime_protect、code_inject（或 SecurityCheckProvider 增加"壳共存白名单"，识别 libvenSec/libbytehook 后跳过对应检测）。

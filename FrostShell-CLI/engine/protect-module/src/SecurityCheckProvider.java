@@ -47,6 +47,24 @@ public class SecurityCheckProvider extends ContentProvider {
     private static volatile Context appContext = null;
     private static volatile String cachedMaps = null;
     private static volatile long cachedMapsTime = 0;
+    private static volatile boolean shellCoexist = false;
+
+    // 检测 FrostShell 壳共存（壳 native 库已加载进本进程）。
+    // 壳与叠加层同时存在时，hook/inject 类检测可能误判壳自身防护行为，
+    // 此时对该类检测做受信任豁免（frida/xposed/root 等独立检测不受影响）。
+    private static boolean isShellCoexist() {
+        if (shellCoexist) return true;
+        try {
+            String maps = readMapsCached();
+            if (maps == null) return false;
+            boolean hasShell = maps.contains(S.t(S.libvenSec)) || maps.contains(S.t(S.libbytehook)) || maps.contains(S.t(S.venSec));
+            if (hasShell) {
+                shellCoexist = true;
+                Log.i(TAG, S.t(S.shell_coexist_msg));
+            }
+        } catch (Throwable ignored) {}
+        return shellCoexist;
+    }
 
     static {
         TAG = "ADFXCBNM";
@@ -317,8 +335,15 @@ public class SecurityCheckProvider extends ContentProvider {
     }
 
     private static void enforce(Context ctx) {
+        boolean shellExempt = isShellCoexist();
         for (Map.Entry<String, Boolean> e : results.entrySet()) {
             if (e.getValue() && CRITICAL.contains(e.getKey())) {
+                // 壳共存时：壳自身的 hook/inject 行为属受信任防护，豁免误杀
+                if (shellExempt && (S.t(S.hook).equals(e.getKey()) || S.t(S.inject).equals(e.getKey()) ||
+                                    S.t(S.code_inject).equals(e.getKey()) || S.t(S.runtime_protect).equals(e.getKey()))) {
+                    Log.w(TAG, S.t(S.shell_exempt_msg) + e.getKey() + S.t(S.shell_suppressed_msg));
+                    continue;
+                }
                 Log.e(TAG, S.t(S.CRITICAL_) + e.getKey() + " detected");
                 triggerKill(S.t(S.critical_) + e.getKey());
             }
@@ -354,7 +379,7 @@ public class SecurityCheckProvider extends ContentProvider {
                         Thread.sleep(3000);
                         if (enabled.contains(S.t(S.anti_debug)) && checkRuntimeThreat()) {
                             put(S.t(S.debugger), true);
-                            triggerKill(S.t(S.monitor_debugger));
+                            if (!isShellCoexist()) triggerKill(S.t(S.monitor_debugger));
                         }
                         if (enabled.contains(S.t(S.frida_detect)) && detectFrida()) {
                             put(S.t(S.frida), true);
@@ -362,7 +387,7 @@ public class SecurityCheckProvider extends ContentProvider {
                         }
                         if (enabled.contains(S.t(S.anti_hook)) && (detectHookLibs() || detectFrida())) {
                             put(S.t(S.hook), true);
-                            triggerKill(S.t(S.monitor_hook));
+                            if (!isShellCoexist()) triggerKill(S.t(S.monitor_hook));
                         }
                         if (enabled.contains(S.t(S.mem_protect)) && detectRwxMemory()) {
                             put(S.t(S.mem_protect), true);
@@ -381,7 +406,7 @@ public class SecurityCheckProvider extends ContentProvider {
                         }
                         if (enabled.contains(S.t(S.runtime_protect)) && isRuntimeCompromised(ctx)) {
                             put(S.t(S.runtime_protect), true);
-                            triggerKill(S.t(S.monitor_runtime));
+                            if (!isShellCoexist()) triggerKill(S.t(S.monitor_runtime));
                         }
                         if (enabled.contains(S.t(S.net_secure)) && detectMitmCert(ctx)) {
                             put(S.t(S.net_secure), true);
