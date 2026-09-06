@@ -25,6 +25,8 @@
 #include <android/log.h>
 #include <sys/uio.h>
 #include <errno.h>
+#include <unwind.h>
+#include <sys/syscall.h>
 
 #define LOG_TAG "ADFXCBNM"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -849,11 +851,131 @@ static bool hookCheckEnhanced() {
 }
 
 // ============================================================
+// 崩溃日志采集（native signal handler）
+// ============================================================
+static char g_crashLogPath[512] = {0};
+static volatile sig_atomic_t g_crashLogReady = 0;
+
+struct BacktraceState {
+    void **current;
+    void **end;
+};
+
+static _Unwind_Reason_Code unwindCallback(struct _Unwind_Context *ctx, void *arg) {
+    BacktraceState *state = (BacktraceState *)arg;
+    uintptr_t pc = _Unwind_GetIP(ctx);
+    if (pc) {
+        if (state->current == state->end) return _URC_END_OF_STACK;
+        *state->current++ = (void *)pc;
+    }
+    return _URC_NO_REASON;
+}
+
+static size_t captureBacktrace(void **buffer, size_t max) {
+    BacktraceState state = {buffer, buffer + max};
+    _Unwind_Backtrace(unwindCallback, &state);
+    return state.current - buffer;
+}
+
+static const char *sigName(int sig) {
+    switch (sig) {
+        case SIGSEGV: return "SIGSEGV";
+        case SIGABRT: return "SIGABRT";
+        case SIGBUS: return "SIGBUS";
+        case SIGILL: return "SIGILL";
+        case SIGFPE: return "SIGFPE";
+        case SIGTRAP: return "SIGTRAP";
+        default: return "SIG";
+    }
+}
+
+static void crashHandler(int sig, siginfo_t *info, void *context) {
+    uintptr_t pc = 0, lr = 0, sp = 0, fault = 0;
+#if defined(__aarch64__)
+    ucontext_t *uc = (ucontext_t *)context;
+    if (uc) {
+        pc = uc->uc_mcontext.pc;
+        lr = uc->uc_mcontext.regs[30];
+        sp = uc->uc_mcontext.sp;
+        fault = uc->uc_mcontext.fault_address;
+    }
+#elif defined(__arm__)
+    ucontext_t *uc = (ucontext_t *)context;
+    if (uc) {
+        pc = uc->uc_mcontext.arm_pc;
+        lr = uc->uc_mcontext.arm_lr;
+        sp = uc->uc_mcontext.arm_sp;
+        fault = uc->uc_mcontext.fault_address;
+    }
+#else
+    (void)context;
+#endif
+    if (info) fault = (uintptr_t)info->si_addr;
+    int fd = -1;
+    if (g_crashLogReady && g_crashLogPath[0]) {
+        fd = open(g_crashLogPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    __android_log_print(ANDROID_LOG_ERROR, "ADFXCBNM_CRASH",
+                        "signal=%d(%s) pid=%d tid=%d pc=0x%llx lr=0x%llx sp=0x%llx fault=0x%llx",
+                        sig, sigName(sig), (int)getpid(), (int)gettid(),
+                        (unsigned long long)pc, (unsigned long long)lr,
+                        (unsigned long long)sp, (unsigned long long)fault);
+    char buf[384];
+    if (fd >= 0) {
+        int len = snprintf(buf, sizeof(buf),
+            "\n[NATIVE CRASH] time=%lld pid=%d tid=%d\nsignal=%d(%s)\npc=0x%llx\nlr=0x%llx\nsp=0x%llx\nfault=0x%llx\nbacktrace:\n",
+            (long long)time(NULL), (int)getpid(), (int)gettid(),
+            sig, sigName(sig),
+            (unsigned long long)pc, (unsigned long long)lr,
+            (unsigned long long)sp, (unsigned long long)fault);
+        if (len > 0) write(fd, buf, (size_t)len);
+    }
+    void *bt[32];
+    size_t n = captureBacktrace(bt, 32);
+    for (size_t i = 0; i < n; i++) {
+        __android_log_print(ANDROID_LOG_ERROR, "ADFXCBNM_CRASH", "  #%02zu pc=0x%llx",
+                            i, (unsigned long long)(uintptr_t)bt[i]);
+        if (fd >= 0) {
+            int len = snprintf(buf, sizeof(buf), "  #%02zu pc=0x%llx\n", i,
+                               (unsigned long long)(uintptr_t)bt[i]);
+            if (len > 0) write(fd, buf, (size_t)len);
+        }
+    }
+    if (fd >= 0) close(fd);
+    signal(sig, SIG_DFL);
+    raise(sig);
+    _exit(1);
+}
+
+// ============================================================
 // JNI Exports
 // ============================================================
 extern "C" {
 static void safeKill();
 static bool isKillHooked();
+
+JNIEXPORT void JNICALL
+Java_com_adfxcbnm_protect_SecurityCheckProvider_nativeInstallCrashHandler(JNIEnv *env, jobject, jstring path) {
+    if (!path) return;
+    const char *p = env->GetStringUTFChars(path, NULL);
+    if (!p) return;
+    strncpy(g_crashLogPath, p, sizeof(g_crashLogPath) - 1);
+    g_crashLogPath[sizeof(g_crashLogPath) - 1] = '\0';
+    env->ReleaseStringUTFChars(path, p);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = crashHandler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
+    sigaction(SIGTRAP, &sa, NULL);
+    g_crashLogReady = 1;
+    LOGI("ADFXCBNM crash handler installed, log=%s", g_crashLogPath);
+}
 
 #define JNI_EXPORT(name, ...) \
     JNIEXPORT jboolean JNICALL Java_com_adfxcbnm_hardeningtool_ProtectionNative_##name(JNIEnv *env, jobject thiz) { return __VA_ARGS__; }
