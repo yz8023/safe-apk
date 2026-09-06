@@ -334,17 +334,72 @@ static bool hookCheckFridaPort27043() {
     return found;
 }
 
-// 检测 libc 函数是否被 inline hook（ARM64指令级检测）
+// 判断地址是否落在本进程可信库的地址段内（libc/libart/壳自身so等）
+// 返回 0=未知/匿名(可疑) 1=可信系统库 2=本进程内其他已加载库
+static int addrInMappedLibrary(unsigned long long addr) {
+    const char *maps = readMapsCached();
+    if (!maps) return 0;
+    // 先检查是否命中攻击性 hook 库（优先判定为攻击）
+    static const char *ATTACK_LIBS[] = {
+        "frida", "gum-js", "gmain", "linjector", "frida-agent", "frida-gadget",
+        "XposedBridge", "edxp", "sandhook", "libxposed", "libsubstrate",
+        "libwhale", "libdreamland", "edxposed", "epic", "dexposed",
+        "libbytehook", "bytehook", "twist", NULL
+    };
+    const char *hit = NULL;
+    const char *line = maps;
+    while (*line) {
+        const char *nl = strchr(line, '\n');
+        if (!nl) nl = line + strlen(line);
+        size_t linelen = (size_t)(nl - line);
+        if (linelen == 0) break;
+        unsigned long long lo = 0, hi = 0;
+        char perm[8] = {0};
+        char path[512] = {0};
+        int parsed = sscanf(line, "%llx-%llx %7s %*x %*x:%*x %*d %511s",
+                            &lo, &hi, perm, path);
+        if (parsed >= 3 && addr >= lo && addr < hi) {
+            const char *base = strrchr(path, '/');
+            const char *name = base ? base + 1 : path;
+            for (int i = 0; ATTACK_LIBS[i]; i++) {
+                if (strstr(name, ATTACK_LIBS[i])) { hit = ATTACK_LIBS[i]; break; }
+            }
+            if (hit) return 0; // 命中攻击库 → 可疑
+            if (path[0] != '\0') {
+                if (strstr(path, "libc.so") || strstr(path, "libart") ||
+                    strstr(path, "libvenSec") || strstr(path, "libsecurity_check")) {
+                    return 1; // 可信系统/壳库
+                }
+                return 2; // 其他已映射文件（应用自身so，视作可接受）
+            }
+            return 0; // 匿名映射 → 可疑
+        }
+        line = nl + 1;
+    }
+    return 0;
+}
+
+// 检测 libc 函数是否被 inline hook（ARM64指令级检测，区分可信来源）
 static bool isFunctionHooked(const char *funcName) {
     void *addr = dlsym(RTLD_DEFAULT, funcName);
     if (!addr) return false;
 #if defined(__aarch64__)
     unsigned char *p = (unsigned char *)addr;
     unsigned int instr = *(unsigned int *)p;
-    // ARM64 B指令: 0001_01xx_xxxx_xxxx (0x14000000)
-    if ((instr & 0xFC000000) == 0x14000000) return true;
-    // ARM64 BL指令: 1001_01xx_xxxx_xxxx (0x94000000)
-    if ((instr & 0xFC000000) == 0x94000000) return true;
+    // ARM64 B指令: 0001_01xx_xxxx_xxxx (0x14000000) → PC相对
+    if ((instr & 0xFC000000) == 0x14000000) {
+        int64_t imm = (int64_t)(instr & 0x03FFFFFF);
+        if (imm & 0x02000000) imm |= ~0x03FFFFFFLL; // 符号扩展
+        unsigned long long target = (unsigned long long)p + (imm << 2);
+        return addrInMappedLibrary(target) == 0; // 目标不可信才判定为攻击
+    }
+    // ARM64 BL指令: 1001_01xx_xxxx_xxxx (0x94000000) → PC相对
+    if ((instr & 0xFC000000) == 0x94000000) {
+        int64_t imm = (int64_t)(instr & 0x03FFFFFF);
+        if (imm & 0x02000000) imm |= ~0x03FFFFFFLL;
+        unsigned long long target = (unsigned long long)p + (imm << 2);
+        return addrInMappedLibrary(target) == 0;
+    }
     // ARM64 BR Xn: 1101_0110_0001_1111_0000_00xx_xxx0_0000
     if ((instr & 0xFFFFFC1F) == 0xD61F0000) return true;
     // ARM64 BLR Xn: 1101_0110_0011_1111_0000_00xx_xxx0_0000
@@ -371,6 +426,18 @@ static bool hookCheckFunctionPrologue() {
     }
     return false;
 }
+// 壳兼容豁免：进程内已加载壳 native 库（FrostShell libvenSec/ByteHook）或
+// 本工具 security so 时，视作受信任来源，不因函数头改写误判为攻击。
+// 注意：真正的 frida/xposed 库不在豁免列表，仍会被检测。
+static bool shellShellLoaded() {
+    const char *maps = readMapsCached();
+    if (!maps) return false;
+    return strstr(maps, "libvenSec") || strstr(maps, "libbytehook") ||
+           strstr(maps, "libsecurity_check");
+}
+static bool isTrustedProtectionActive() {
+    return shellShellLoaded();
+}
 static bool hookCheckXposed() {
     const char *maps = readMapsCached();
     if (!maps) return false;
@@ -387,6 +454,7 @@ static bool scanMemoryForHookPatterns() {
            strstr(maps, "riru") || strstr(maps, "zygisk");
 }
 static bool detectLibcHook() {
+    if (isTrustedProtectionActive()) return false;
     char buf1[512], buf2[512];
     bool syscallOk = sysReadFile("/proc/self/status", buf1, sizeof(buf1));
     bool libcOk = readSmallFile("/proc/self/status", buf2, sizeof(buf2));
