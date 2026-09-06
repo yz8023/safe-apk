@@ -15,7 +15,7 @@
 - **minSdk / targetSdk**：`26` / `34`（Android 8.0 - Android 14）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
 - **当前版本**：`9.10.5`（versionCode 47）。
-- **commit 哈希**：`bf6145b`（v9.10.0），`467caea`（v9.10.1），`473efc6`（v9.10.2），（v9.10.3~v9.10.5 见 §6）。
+- **commit 哈希**：`bf6145b`（v9.10.0），`467caea`（v9.10.1），`473efc6`（v9.10.2），（v9.10.3~v9.10.5 见 §6），`b896d9a`（v9.10.6，已推送并打 tag v9.10.6）。
 - **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260902-fix-manifest-resource-id`，PR #1）。
 
 ## 2. 开发环境
@@ -115,6 +115,12 @@ rm -rf app/.cxx
     - 根因：v9.10.4 只修了跳转偏移，但 `FrostStringEncryptor.rewriteMethod` 提升 registerCount（baseRegs→+2）容纳临时寄存器时，未处理 **Dalvik 参数寄存器锚定最高位** 这一事实——registerCount 增加后参数整体上移，方法内指令对参数寄存器（this/显式参数）的原始编号引用不迁移，ART verifier 在入口把最高位寄存器标为参数类型而指令读取原编号（现无定义 local）→ `instance field access on object that has non-reference type Undefined`（onBackPressed 首条 iget 即 [0x0]）。
     - 修复：方法头部插入参数搬移指令（新参数区 src=baseRegs+4+pos 逐槽搬回原参数区 dst=low+pos；this/引用用 MOVE_OBJECT_16、宽用 MOVE_WIDE_16、其余 MOVE_16），既有指令引用保持有效；临时寄存器置参数区之上（baseRegs+2/+3）；target 索引统一 +headShift；上限检查 newRegCount=baseRegs+参数槽数+4≤0xFFFF。
     - 本地回归：javac+d8 样例（onBackPressed 分支形状 / packed-switch / 多参数 long+int+String+Object 与 static int+long+String），dexlib2 双校验（offset 边界 + iget/iput 对象寄存器类型流，等价 ART verifier）三组均为 0 错误，clinit 注入后亦 0。
+  - **v9.10.6 注入崩溃日志采集（需求8）**：
+    - 背景：palmPC 加固选项基本全选后启动闪退，tombstone 仅 `signal 11 SIGSEGV fault addr 0x0 / pc 0 lr 0 / #00 pc 0 <unknown>`——native 空函数指针调用崩溃发生在保护 native 层，Java 层 `Thread.setDefaultUncaughtExceptionHandler` 抓不到，无法定位真实崩溃点。
+    - 修复：注入的 `libsecurity_check.so` 新增 `Java_com_adfxcbnm_protect_SecurityCheckProvider_nativeInstallCrashHandler(String path)`，注册 SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE/SIGTRAP 的 SA_SIGINFO handler；`crashHandler` 以 async-signal-safe（open/write/close）写崩溃现场（时间戳/pid/tid/signal/pc/lr/sp/fault + `_Unwind_Backtrace` 32 帧）至日志文件并输出 logcat（`ADFXCBNM_CRASH` tag），记录后恢复默认 handler 并 `raise` 重放信号保留系统 tombstone。
+    - Java 层 `SecurityCheckProvider`：`onCreate` 加载 so 后立即调用 `installNativeCrashHandler()`，日志优先写 `getExternalFilesDir`（`/sdcard/Android/data/<pkg>/files/adfxcbnm_crash.log`，免权限可提取）+ 内部 filesDir 副本 + logcat；`writeCrashLog` 追加 pkg/pid/tid/nativeOk/features 上下文；`runAllChecks` 增加 `checks:start/checks:done` 阶段 marker。
+    - 本地回归：4 ABI so 编译通过（llvm-nm 校验 4 个 JNI 导出符号齐全）；dex 用 d8 重编（dexdump 校验 native 声明齐全）；gitapp_test.apk 叠加注入 classes2.dex+so+features.cfg 签名后资源与资产 SHA-256 完全一致。
+    - 日志提取：`/sdcard/Android/data/<pkg>/files/adfxcbnm_crash.log`（文件管理器/USB 直取）或 logcat 过滤 `ADFXCBNM_CRASH`。
   - **v9.10.4 dex 改写 pass 跳转目标错位修复（需求7）**：
     - ① 根因：`FrostStringEncryptor.rewriteMethod` 与 `FrostReflectionClinitInjector.injectHelperCall` 重建方法体时把 DexBacked 指令（保留原始 codeOffset）与新指令混拼进 `ImmutableMethodImplementation`——插入新指令后方法指令流右移，但 goto/if/switch 仍引用原始偏移，跳转目标落在指令中间，ART verifier 拒绝加载（真机崩溃 `void onBackPressed(): [0x15] target dex pc 0x28 is not at instruction start`，App 启动即闪退）。
     - ② 修复：两处均改用 `MutableMethodImplementation(MethodImplementation)` 复制方法体——构造函数将全部 offset 指令经 codeAddress→index 映射转为 label 式 builder 指令，插入/替换后 `fixInstructions` 统一重算所有跳转偏移；`FrostStringEncryptor` 将命中 const-string 替换为密文常量并以 (idx+1) 锚点倒序插入 4 条（const/16 + invoke-static/range + move-result-object + move-object/16），因 Mutable 的 registerCount 为 private final，用 `MethodImplementation` facade 覆盖 `getRegisterCount()` 提升 2 个临时寄存器。
@@ -132,7 +138,7 @@ rm -rf app/.cxx
 - **进行中**：（无）
 - **已搁置**：
   - native 侧 VMP 解释器 / RC4 SO 解密 / ELF section 注入：仅文档对接点（`docs/NATIVE-DOCKING.md`），未实现。
-- **最近可运行的 commit**：`473efc6`（v9.10.2，已推送并打 tag）；v9.10.0 `bf6145b`、v9.10.1 `467caea`。（v9.10.3~v9.10.5 提交哈希见 §6）
+- **最近可运行的 commit**：`473efc6`（v9.10.2，已推送并打 tag）；v9.10.0 `bf6145b`、v9.10.1 `467caea`。（v9.10.3~v9.10.5 提交哈希见 §6）；v9.10.6 `b896d9a`（已推送并打 tag）。
 
 ## 7. 待开发内容
 
