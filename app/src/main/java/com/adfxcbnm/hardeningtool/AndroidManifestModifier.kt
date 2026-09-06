@@ -165,7 +165,55 @@ object AndroidManifestModifier {
                     false
                 }
 
-            val injectProvider = appAttrs.isEmpty()
+            val alreadyInjected = elements.any { el ->
+                el.name == "provider" && el.isStart &&
+                    (el.attrs?.any { it.name == "name" && it.value == "com.adfxcbnm.protect.SecurityCheckProvider" } ?: false)
+            }
+            val injectProvider = appAttrs.isEmpty() && !alreadyInjected
+            if (alreadyInjected && appAttrs.isEmpty()) {
+                // 已注入过 SecurityCheckProvider：清理重复声明，只保留第一个，避免重复 authority
+                val toRemove = mutableSetOf<Int>()
+                val providerStartIdxs = mutableListOf<Int>()
+                for (i in elements.indices) {
+                    val el = elements[i]
+                    if (el.name == "provider" && el.isStart &&
+                        (el.attrs?.any { it.name == "name" && it.value == "com.adfxcbnm.protect.SecurityCheckProvider" } ?: false)) {
+                        providerStartIdxs.add(i)
+                    }
+                }
+                if (providerStartIdxs.size > 1) {
+                    for (k in 1 until providerStartIdxs.size) {
+                        val start = providerStartIdxs[k]
+                        toRemove.add(start)
+                        var depth = 0
+                        for (j in start until elements.size) {
+                            val sub = elements[j]
+                            if (sub.name == "provider") {
+                                if (sub.isStart) depth++ else {
+                                    depth--
+                                    if (depth == 0) {
+                                        toRemove.add(j)
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (toRemove.isNotEmpty()) {
+                    val filtered = mutableListOf<Chunk.Element>()
+                    for (i in elements.indices) {
+                        if (i in toRemove) {
+                            log?.invoke("removed duplicate provider at element index $i")
+                        } else {
+                            filtered.add(elements[i])
+                        }
+                    }
+                    elements.clear()
+                    elements.addAll(filtered)
+                }
+                log?.invoke("provider already injected, dedup done (kept=${providerStartIdxs.size - toRemove.count { it in providerStartIdxs }})")
+            }
             if (injectProvider) {
                 val neededStrings = mutableListOf(
                     "com.adfxcbnm.protect.SecurityCheckProvider",
