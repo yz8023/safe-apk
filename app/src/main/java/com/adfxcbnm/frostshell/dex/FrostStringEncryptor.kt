@@ -179,6 +179,13 @@ object FrostStringEncryptor {
          * 所有 offset 指令（goto/if/switch 等）经 codeAddress 映射转为 label 式 builder
          * 指令，插入/替换后由 fixInstructions 统一重算跳转偏移。直接拼接 backed 指令会
          * 保留原始 codeOffset，插入新指令后将导致跳转目标错位（ART VerifyError）。
+         *
+         * 寄存器布局：Dalvik 调用约定中参数寄存器锚定在寄存器区最高位，registerCount
+         * 增加后参数寄存器自动整体上移，但指令中对参数寄存器的引用不会跟随迁移（会演化为
+         * "instance field access on object that has non-reference type Undefined"）。
+         * 因此在方法头部插入参数搬移指令：从新的参数寄存器（src=baseRegs+4+pos）搬回原
+         * 参数寄存器（dst=low+pos），保持既有指令引用不变；临时寄存器 tmp/key 放在参数
+         * 区之下的新增空间（baseRegs+2/baseRegs+3）。
          */
         fun rewriteMethod(method: Method): Method? {
             val impl = method.implementation ?: return null
@@ -195,14 +202,44 @@ object FrostStringEncryptor {
             }
             if (targetIndexes.isEmpty()) return null
             val baseRegs = impl.registerCount
-            if (baseRegs + 2 > MAX_VALUE) return null
-            val tmpReg = baseRegs
-            val keyReg = baseRegs + 1
-            val newRegCount = baseRegs + 2
+            val isStatic = method.accessFlags and AccessFlags.STATIC.value != 0
+
+            // 计算参数寄存器槽位（type 序：显式参数按声明顺序，实例方法的 this 在最顶）
+            val slotTypes = ArrayList<String>()
+            for (p in method.parameters) slotTypes.add(p.type)
+            if (!isStatic) slotTypes.add("Lthis;")
+            val slotWidths = slotTypes.map { if (it == "J" || it == "D") 2 else 1 }
+            val totalSlots = slotWidths.sum()
+            val low = baseRegs - totalSlots
+
+            // 临时寄存器位于参数区（新位置 baseRegs+4 起）之下，参数搬移后不与任何既有引用冲突
+            val tmpReg = baseRegs + 2
+            val keyReg = baseRegs + 3
+            val newRegCount = baseRegs + totalSlots + 4
+            if (newRegCount > MAX_VALUE) return null
 
             val mutable = MutableMethodImplementation(impl)
+
+            // 方法头部插入参数搬移：新参数区（src=baseRegs+4+pos）搬回原参数区（dst=low+pos）
+            // 每条 move 对应一个参数类型槽位，头部共插入 slotTypes.size 条指令
+            var pos = 0
+            for (i in slotTypes.indices.reversed()) {
+                val w = slotWidths[i]
+                val dst = low + pos
+                val src = baseRegs + 4 + pos
+                val op = when {
+                    w == 2 -> Opcode.MOVE_WIDE_16
+                    slotTypes[i] == "Lthis;" || slotTypes[i].startsWith("L") || slotTypes[i].startsWith("[") ->
+                        Opcode.MOVE_OBJECT_16
+                    else -> Opcode.MOVE_16
+                }
+                mutable.addInstruction(0, BuilderInstruction32x(op, dst, src))
+                pos += w
+            }
+            val headShift = slotTypes.size
+
             for (i in targetIndexes.size - 1 downTo 0) {
-                val index = targetIndexes[i]
+                val index = targetIndexes[i] + headShift
                 val instr = mutable.instructions[index]
                 val value = (instr as ReferenceInstruction).reference as StringReference? ?: return null
                 val origReg = (instr as OneRegisterInstruction).registerA
