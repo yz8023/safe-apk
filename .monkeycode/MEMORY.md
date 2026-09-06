@@ -145,3 +145,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 关键机制：SIGKILL 无法被 signal handler 捕获，所以"闪退无日志"基本指向 triggerKill→nativeKill→SIGKILL 路径，而非 SIGSEGV。Java 层 anti_hook 走 detectHookLibs()（maps 库名列表 XposedBridge/sandhook 等），native checkHookEnhanced 走 hookCheckFunctionPrologue 函数头指令检测——后者是 ByteHook 改写函数头的误判来源。
   - 保护模块字符串全在 S_obfuscated.java 混淆（XOR K {0x12..0xF0}），新增字符串必须同样转成字节数组（python XOR 生成），Java 源码内禁止裸字符串。
   - CMake POST_BUILD 只在 Gradle 编译对应 ABI 时更新 assets/lib so；assembleDebug 增量构建可能用缓存 APK 不含新 assets。手动替换 assets so 后必须强制重新构建（--offline assembleDebug），并校验 APK 内资源 sha256 与源码 assets 一致。native 修改同步两份 protection.cpp：FrostShell-CLI/engine/protect-module/src/ 与 app/src/main/cpp/。
+
+[Project Knowledge Summary]
+- Date: 2026-09-06
+- Context: Discovered by Agent while diagnosing FrostShell 字符串加密写坏主 dex 导致 SIGSEGV 闪退
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - FrostShell L1 字符串加密对 method_ids 逼近 0xFFFF 的大 dex 重写时，DexPool 重建方法池索引重排溢出，writeDexFile 抛 `Exception occurred while writing code_item ... Unsigned short value out of range`（如 65698=0x100A2）。错误方法往往是未加密的 `<init>`（引用池末尾方法），与是否有敏感字符串无关。加 100 个 helper 必触发、加 1 个不触发；classes3~9 成功仅主 classes.dex 失败，因主 dex method_ids 最接近上限（本例 65441）。
+  - DexFileFactory.writeDexFile 非原子写：失败后原 dex 被截断写坏（44MB→18MB），损坏 dex 被打包进产物 → ART 执行损坏 code_item 空指针 SIGSEGV（pc=0）。这是"加固后启动闪退"的新一类根因（区别于壳冲突 SIGKILL）。
+  - 修复范式：writeDexFile 前先备份原文件（readBytes/writeBytes 而非 Kotlin copyTo，避免 JVM 上 android Log stub 干扰），异常时恢复备份并重新抛出，上层已捕获（打印 WARNING 继续后续 dex）。恢复/清理/日志全部 try 保护，日志失败不阻断异常传递。验证：恢复后 md5 与备份一致、备份删除干净。
+  - 大 dex 用 RewrittenClassDef/RewrittenDexFile 委托式透传（避免 ImmutableDexFile 对全类 TreeSet 排序 OOM）本身正确，DexPool 直接重写原始 backed 类也能成功（对照实验 ReproWrite 43MB 通过）；溢出诱因是新增 helper 后 method 池索引重排越过 0xFFFF。
