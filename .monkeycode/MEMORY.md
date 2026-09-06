@@ -104,3 +104,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 修复范式：需要在既有方法内新增临时寄存器时，除用 `MutableMethodImplementation(MethodImplementation)` 复制（自动 label 化+fixInstructions 重算偏移，解决跳转目标错位）外，还必须在方法头部插入「参数搬移」指令——从提升后的新参数区（regCount-totalSlots 起）逐槽位搬回原参数区（baseRegs-totalSlots 起），this/引用用 MOVE_OBJECT_16、宽类型 MOVE_WIDE_16、其余 MOVE_16（32x 格式 BuilderInstruction32x(dst,src)）；临时寄存器放在参数区之上的新增空间（不与既有引用冲突）；头部新增指令数会让后续 target 索引整体偏移需 +headShift。上限检查 newRegCount = baseRegs + 参数槽数 + 额外寄存器数 ≤ 0xFFFF。
   - dex 级双校验（等价 ART verifier）：① offset 指令目标（goto/if 相对=指令起始+offset，switch/payload 绝对=offset）落在指令起始边界；② 寄存器类型流——entry 参数区各槽位按参数类型标记（this/对象=引用），逐指令传播 MOVE/CONST String/invoke 结果/move-result，检查 iget/iput 对象寄存器与 AGET 数组寄存器必须为引用类型。用 javac+d8 构造 onBackPressed 分支形状、packed-switch、多参数（long+int+String+Object）样例验证。
   - gh CLI 凭据再次失效时（HTTP 401），用 `echo -e "protocol=https\nhost=github.com\n" | git credential fill` 取 token 后 `gh auth login --with-token` 恢复（本环境 helper=/app/agent/bin/agent git-credential-helper，username=Forinxy）。
+
+[Project Knowledge Summary]
+- Date: 2026-09-06
+- Context: Discovered by Agent while diagnosing palmPC 全选加固后启动闪退（tombstone 仅 pc=0 lr=0 fault addr 0x0 单帧）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 加固产物 native 空指针崩溃（tombstone `signal 11 SIGSEGV fault addr 0x0 / pc 0 lr 0 / #00 pc 0 <unknown>`）发生在保护 native 层，Java `Thread.setDefaultUncaughtExceptionHandler` 抓不到。诊断手段：注入崩溃日志采集——`libsecurity_check.so` 增加 `nativeInstallCrashHandler(String path)`（注册 SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE/SIGTRAP 的 SA_SIGINFO handler），handler 内用 async-signal-safe（open/write/close，绝不可用 std::ofstream/malloc）记录时间戳/pid/tid/signal/pc/lr/sp/fault（ucontext：arm64 用 uc_mcontext.pc/regs[30]/sp，arm32 用 arm_pc/arm_lr/arm_sp）+ `_Unwind_Backtrace`（<unwind.h>，最多 32 帧）至日志文件并输出 logcat（tag ADFXCBNM_CRASH），记录后 `signal(sig,SIG_DFL); raise(sig)` 重放信号保留系统 tombstone。
+  - Java 层配合：`onCreate` 在 `System.loadLibrary` 成功后立即调用 install；日志优先写 `getExternalFilesDir`（`/sdcard/Android/data/<pkg>/files/`，免权限可提取）再写内部 filesDir 副本，`writeCrashLog` 带 pkg/pid/tid/nativeOk/features 上下文，检测循环加 checks:start/checks:done 阶段 marker 定位崩溃阶段。日志提取：文件管理器读外部目录或 logcat 过滤 ADFXCBNM_CRASH。
+  - 重新编译注入资源：4 ABI so 用 NDK clang++ 直编（`aarch64-linux-android26-clang++ -std=c++17 -O2 -fPIC -shared protection.cpp -o <out> -llog -landroid`）；dex 需先 javac（`-source 1.8 -target 1.8 -bootclasspath android.jar`）再 d8（`d8 --release --lib android.jar --output <dir> classes`）；注入回归用 zipfile 注入 classes2.dex+so+features.cfg 后 apksigner 签名，校验资源与资产 SHA-256 一致。
+  - GitHub release asset 上传端点必须是 `uploads.github.com`（不是 api.github.com），否则返回 404 Not Found；Content-Type 用 application/zip 或省略均可，asset 名沿用 app-debug.apk。
