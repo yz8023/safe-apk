@@ -132,7 +132,45 @@ object FrostStringEncryptor {
         }
         if (encryptedCount > 0) {
             // 委托式 DexFile：交由 DexPool 原样写入，避免 ImmutableDexFile 对全部类再做 immutable 化
-            DexFileFactory.writeDexFile(dexFile.absolutePath, RewrittenDexFile(dex.opcodes, newClasses))
+            val backup = java.io.File(dexFile.absolutePath + ".stringenc_backup")
+            val wroteBackup = try {
+                backup.writeBytes(dexFile.readBytes())
+                true
+            } catch (t: Throwable) {
+                false
+            }
+            try {
+                DexFileFactory.writeDexFile(dexFile.absolutePath, RewrittenDexFile(dex.opcodes, newClasses))
+            } catch (t: Throwable) {
+                // DexPool 对 method 池接近 0xFFFF 的大 dex 重排时溢出（Unsigned short out of range），
+                // 恢复原始 dex，保证产物不携带损坏方法体（宁可该 dex 跳过字符串加密）。
+                // 恢复与清理失败不得阻断流程：dex 损坏会被上层 extractAllMethods 再次兜底，
+                // 但尽量在此恢复完整原始文件。
+                var restored = false
+                if (wroteBackup) {
+                    try {
+                        dexFile.writeBytes(backup.readBytes())
+                        restored = true
+                    } catch (r: Throwable) {
+                        // 恢复失败：文件可能已损坏，交由上层逻辑兜底
+                    }
+                }
+                try {
+                    backup.delete()
+                } catch (d: Throwable) {
+                    // 忽略清理失败
+                }
+                try {
+                    FrostLogUtils.error(
+                        "string encrypt: DexPool overflow on %s (%s), restored=%s, skipping this dex",
+                        dexFile.name, t.message, restored
+                    )
+                } catch (l: Throwable) {
+                    // 日志失败不阻断异常传递
+                }
+                throw t
+            }
+            backup.delete()
             FrostLogUtils.info(
                 "string encrypt: strings=%d helpers=%d file=%s",
                 encryptedCount, helperCount, dexFile.name
