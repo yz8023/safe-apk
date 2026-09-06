@@ -1171,6 +1171,12 @@ fun MainScreen() {
                         Spacer(Modifier.width(4.dp))
                         Text("复制目录")
                     }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { openResultApk(context, resultPath) }) {
+                        Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("打开APK")
+                    }
                 }
             },
             dismissButton = {
@@ -2095,6 +2101,39 @@ data class ProcessResult(
     val hasArsc: Boolean = false
 )
 
+/**
+ * 直接打开加固产物 APK（触发系统安装流程）。
+ * resultPath 可能是文件绝对路径或 content:// URI。
+ * content URI 直接使用；文件路径经 FileProvider 转为可共享的 content URI。
+ */
+private fun openResultApk(context: Context, path: String) {
+    try {
+        if (path.isBlank()) return
+        val uri: Uri = if (path.startsWith("content://")) {
+            Uri.parse(path)
+        } else {
+            val apkFile = File(path)
+            if (!apkFile.exists() || apkFile.length() <= 0) return
+            androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                apkFile
+            )
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "openResultApk failed: ${e.message}")
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("path", path))
+        android.widget.Toast.makeText(context, "打开失败，路径已复制: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+    }
+}
+
 
 
 
@@ -2810,7 +2849,26 @@ private suspend fun processFrostShellApk(
                 return@withContext ProcessResult(false, "", 0, "", 0f)
             }
             val viaMediaStore = deliveredPath != null && deliveredPath!!.startsWith("content://")
-            val realSize = sourceInputSize
+            val realSize = runCatching {
+                if (deliveredPath != null && deliveredPath!!.startsWith("content://")) {
+                    val resolver = context.contentResolver
+                    resolver.query(
+                        Uri.parse(deliveredPath),
+                        arrayOf(android.provider.OpenableColumns.SIZE),
+                        null, null, null
+                    )?.use { c ->
+                        if (c.moveToFirst()) {
+                            val idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                            if (idx >= 0 && !c.isNull(idx)) c.getLong(idx)
+                            else outputFile.length()
+                        } else outputFile.length()
+                    } ?: outputFile.length()
+                } else if (deliveredPath != null) {
+                    File(deliveredPath).length()
+                } else {
+                    outputFile.length()
+                }
+            }.getOrDefault(outputFile.length())
             val sizeDiff = realSize - sourceInputSize
             val diffStr = if (sizeDiff >= 0) "+$sizeDiff" else "$sizeDiff"
             val elapsed = System.currentTimeMillis() - t0
