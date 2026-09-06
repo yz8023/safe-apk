@@ -155,3 +155,12 @@ Entries discovered by the Agent during task execution should follow this format:
   - DexFileFactory.writeDexFile 非原子写：失败后原 dex 被截断写坏（44MB→18MB），损坏 dex 被打包进产物 → ART 执行损坏 code_item 空指针 SIGSEGV（pc=0）。这是"加固后启动闪退"的新一类根因（区别于壳冲突 SIGKILL）。
   - 修复范式：writeDexFile 前先备份原文件（readBytes/writeBytes 而非 Kotlin copyTo，避免 JVM 上 android Log stub 干扰），异常时恢复备份并重新抛出，上层已捕获（打印 WARNING 继续后续 dex）。恢复/清理/日志全部 try 保护，日志失败不阻断异常传递。验证：恢复后 md5 与备份一致、备份删除干净。
   - 大 dex 用 RewrittenClassDef/RewrittenDexFile 委托式透传（避免 ImmutableDexFile 对全类 TreeSet 排序 OOM）本身正确，DexPool 直接重写原始 backed 类也能成功（对照实验 ReproWrite 43MB 通过）；溢出诱因是新增 helper 后 method 池索引重排越过 0xFFFF。
+
+[Project Knowledge Summary]
+- Date: 2026-09-06
+- Context: Discovered by Agent while fixing FrostShell 大小显示 +0 bug and adding 打开APK feature
+- Category: Troubleshooting & Debugging / Operations & Deployment
+- Instructions:
+  - FrostShell 引擎路径（processFrostShellApk）的 sizeDiff 曾因 `val realSize = sourceInputSize` 误赋源大小而恒为 +0；正确做法是读实际输出文件大小：文件路径用 File.length()，content:// 输出用 ContentResolver 查询 OpenableColumns.SIZE（FileProvider 的 file_paths.xml 已配 root-path 覆盖全部路径，getUriForFile 可直接转任意路径）。
+  - 结果对话框成功态含"复制目录/打开APK/关闭"三按钮；打开 APK 用 ACTION_VIEW + application/vnd.android.package-archive + FLAG_GRANT_READ_URI_PERMISSION，manifest 已有 REQUEST_INSTALL_PACKAGES。
+  - 发布 release 时 gh CLI 凭据失效（Bad credentials），改用 `git credential fill`（helper 为 /app/agent/bin/agent git-credential-helper，账号 Forinxy）获取 password 作 Authorization: token 调 api.github.com 建 release、uploads.github.com 传 asset。
