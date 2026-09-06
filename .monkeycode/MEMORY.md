@@ -114,3 +114,14 @@ Entries discovered by the Agent during task execution should follow this format:
   - Java 层配合：`onCreate` 在 `System.loadLibrary` 成功后立即调用 install；日志优先写 `getExternalFilesDir`（`/sdcard/Android/data/<pkg>/files/`，免权限可提取）再写内部 filesDir 副本，`writeCrashLog` 带 pkg/pid/tid/nativeOk/features 上下文，检测循环加 checks:start/checks:done 阶段 marker 定位崩溃阶段。日志提取：文件管理器读外部目录或 logcat 过滤 ADFXCBNM_CRASH。
   - 重新编译注入资源：4 ABI so 用 NDK clang++ 直编（`aarch64-linux-android26-clang++ -std=c++17 -O2 -fPIC -shared protection.cpp -o <out> -llog -landroid`）；dex 需先 javac（`-source 1.8 -target 1.8 -bootclasspath android.jar`）再 d8（`d8 --release --lib android.jar --output <dir> classes`）；注入回归用 zipfile 注入 classes2.dex+so+features.cfg 后 apksigner 签名，校验资源与资产 SHA-256 一致。
   - GitHub release asset 上传端点必须是 `uploads.github.com`（不是 api.github.com），否则返回 404 Not Found；Content-Type 用 application/zip 或省略均可，asset 名沿用 app-debug.apk。
+
+[Project Knowledge Summary]
+- Date: 2026-09-06
+- Context: Discovered by Agent while diagnosing palmPC 二次加固产物闪退（用户上传两个 APK 分析）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 二次加固（在已带 ADFXCBNM 保护的 APK 上再次叠加注入）会触发两个工具缺陷：① libsecurity_check.so 已存在时被跳过注入（旧代码 `if (!existingEntries.contains(targetName))`），导致新版 classes2.dex（含 nativeInstallCrashHandler 声明）配旧版 so（无该导出）→ crash handler 静默失效；② AndroidManifestModifier 注入 SecurityCheckProvider 前不查重，二次叠加产生两个相同 authority 的 provider。
+  - 修复范式：SO 注入前把 `soTargets` 全部加入 `entriesToAdd`（写入循环会跳过它们），随后无条件 putNextEntry 覆盖写入最新版 so（记录 replacedAbis 而非仅 injectedAbis）——注意 entriesToAdd 必须在写入循环前构造，否则旧 so 先被原样复制再加新 so 造成 zip 重复条目。
+  - manifest 去重范式：解析 AXML 后先查 `elements.any { name=="provider" && isStart && attrs 含 name 属性值为 com.adfxcbnm.protect.SecurityCheckProvider }`，已存在则找出所有重复 provider 的 start+对应 end 索引对（providerStartIdxs + 深度匹配）一并移除只留第一个；验证用 aapt dump xmltree 数 provider 出现次数。
+  - 诊断用户上传 APK 是否被本工具处理过：查 `assets/features.cfg`（含 `# ADFXCBNM Feature Configuration` 头与 version=）、`assets/protection_config.dat`（magic `ADFXCBNM_CFG_V9x`）、`assets/protection_manifest.json`（apk_size/apk_hash）、签名者 DN 是否 `CN=ADFXCBNM Debug`；features.cfg 内 `signature_sha256` 必然等于该 APK 实际签名 digest（apksigner verify --print-certs）。两个 APK 签名 digest 不同会导致升级安装 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
+  - 验证工具修改的离线方法：编译产物在 `app/build/tmp/kotlin-classes/debug/`，用 javac 写调用 `AndroidManifestModifier.INSTANCE.modifyManifest(byte[],Context,List<String>,String,Function1,List<ApplicationAttrPatch>)` 的 driver（classpath 加 kotlin-stdlib 与 android.jar），对真实提取的 AndroidManifest.xml 二进制跑改前改后对比 + aapt dump xmltree 校验。

@@ -2389,6 +2389,15 @@ private suspend fun processApk(
 
          val entriesToAdd = linkedSetOf(manifestName, configName, "assets/features.cfg")
 
+        val deviceAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        val targetAbis = listOf(deviceAbi, "arm64-v8a", "armeabi-v7a", "x86", "x86_64").distinct()
+        val soTargets = targetAbis.filter { abi ->
+            try {
+                context.assets.open("lib/$abi/libsecurity_check.so").use { it.readBytes() }.isNotEmpty()
+            } catch (e: Exception) { false }
+        }
+        entriesToAdd.addAll(soTargets.map { "lib/$it/libsecurity_check.so" })
+
         val enabledFeatures = allFeatures.mapNotNull { PROTECTION_FEATURE_MAP[it] }
         detailLog("═══ 已选功能: ${enabledFeatures.size}项 ═══")
         detailLog("── 加固 ──")
@@ -2484,29 +2493,26 @@ private suspend fun processApk(
                 }
 
                 // Inject native libraries for each ABI
-                // 只注入目标APK对应ABI的SO，避免不必要膨胀
-                val deviceAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
-                val targetAbis = listOf(deviceAbi, "arm64-v8a", "armeabi-v7a", "x86", "x86_64").distinct()
+                // 覆盖注入最新版SO，确保与新DEX匹配
                 val injectedAbis = mutableListOf<String>()
-                for (targetAbi in targetAbis) {
+                val replacedAbis = mutableListOf<String>()
+                for (targetAbi in soTargets) {
                     try {
                         val soAsset = context.assets.open("lib/$targetAbi/libsecurity_check.so")
                         val soBytes = soAsset.use { it.readBytes() }
                         if (soBytes.isNotEmpty()) {
                             val targetName = "lib/$targetAbi/libsecurity_check.so"
-                            // 只注入不存在的SO文件，避免覆盖目标APK已有的文件
-                            if (!existingEntries.contains(targetName)) {
-                                val soEntry = ZipEntry(targetName).apply {
-                                    method = ZipEntry.STORED
-                                    size = soBytes.size.toLong()
-                                    compressedSize = soBytes.size.toLong()
-                                    crc = CRC32().apply { update(soBytes) }.value
-                                }
-                                zos.putNextEntry(soEntry)
-                                zos.write(soBytes)
-                                zos.closeEntry()
-                                injectedAbis.add(targetAbi)
+                            val existed = existingEntries.contains(targetName)
+                            val soEntry = ZipEntry(targetName).apply {
+                                method = ZipEntry.STORED
+                                size = soBytes.size.toLong()
+                                compressedSize = soBytes.size.toLong()
+                                crc = CRC32().apply { update(soBytes) }.value
                             }
+                            zos.putNextEntry(soEntry)
+                            zos.write(soBytes)
+                            zos.closeEntry()
+                            if (existed) replacedAbis.add(targetAbi) else injectedAbis.add(targetAbi)
                         }
                     } catch (e: Exception) {
                         // ABI not available in assets, skip
@@ -2514,7 +2520,11 @@ private suspend fun processApk(
                 }
                 if (injectedAbis.isNotEmpty()) {
                     addLog("SO注入: ${injectedAbis.joinToString(",")}", LogType.SUCCESS)
-                } else {
+                }
+                if (replacedAbis.isNotEmpty()) {
+                    addLog("SO注入: 已存在并覆盖为最新版 ${replacedAbis.joinToString(",")}", LogType.SUCCESS)
+                }
+                if (injectedAbis.isEmpty() && replacedAbis.isEmpty()) {
                     addLog("SO跳过，运行时使用纯Java检测", LogType.INFO)
                 }
 
@@ -2917,6 +2927,16 @@ private fun overlayProtectionLayer(
 
         val entriesToAdd = linkedSetOf(manifestName, configName, "assets/features.cfg")
 
+        val deviceAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        val targetAbis = listOf(deviceAbi, "arm64-v8a", "armeabi-v7a", "x86", "x86_64").distinct()
+        val soTargets = targetAbis.filter { abi ->
+            try {
+                context.assets.open("lib/$abi/libsecurity_check.so").use { it.readBytes() }.isNotEmpty()
+            } catch (e: Exception) { false }
+        }
+        val soTargetNames = soTargets.map { "lib/$it/libsecurity_check.so" }
+        entriesToAdd.addAll(soTargetNames)
+
         var manifestModified = false
         val intermediateFile = File(outputFile.parentFile, "${outputFile.nameWithoutExtension}_intermediate.apk")
         ZipInputStream(FileInputStream(inputFile).buffered()).use { zis ->
@@ -2976,35 +2996,34 @@ private fun overlayProtectionLayer(
                     addLog("叠加注入: DEX异常 ${e.message}", LogType.WARNING)
                 }
 
-                val deviceAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
-                val targetAbis = listOf(deviceAbi, "arm64-v8a", "armeabi-v7a", "x86", "x86_64").distinct()
                 val injectedAbis = mutableListOf<String>()
-                for (targetAbi in targetAbis) {
+                val replacedAbis = mutableListOf<String>()
+                for (targetAbi in soTargets) {
                     try {
                         val soBytes = context.assets.open("lib/$targetAbi/libsecurity_check.so").use { it.readBytes() }
                         if (soBytes.isNotEmpty()) {
                             val targetName = "lib/$targetAbi/libsecurity_check.so"
-                            if (!existingEntries.contains(targetName)) {
-                                val soEntry = ZipEntry(targetName).apply {
-                                    method = ZipEntry.STORED
-                                    size = soBytes.size.toLong()
-                                    compressedSize = soBytes.size.toLong()
-                                    crc = CRC32().apply { update(soBytes) }.value
-                                }
-                                zos.putNextEntry(soEntry)
-                                zos.write(soBytes)
-                                zos.closeEntry()
-                                injectedAbis.add(targetAbi)
+                            val existed = existingEntries.contains(targetName)
+                            val soEntry = ZipEntry(targetName).apply {
+                                method = ZipEntry.STORED
+                                size = soBytes.size.toLong()
+                                compressedSize = soBytes.size.toLong()
+                                crc = CRC32().apply { update(soBytes) }.value
                             }
+                            zos.putNextEntry(soEntry)
+                            zos.write(soBytes)
+                            zos.closeEntry()
+                            if (existed) replacedAbis.add(targetAbi) else injectedAbis.add(targetAbi)
                         }
                     } catch (e: Exception) { }
                 }
                 if (injectedAbis.isNotEmpty()) addLog("叠加注入: SO ${injectedAbis.joinToString(",")}", LogType.SUCCESS)
+                if (replacedAbis.isNotEmpty()) addLog("叠加注入: SO 已存在并覆盖为最新版 ${replacedAbis.joinToString(",")}", LogType.SUCCESS)
 
                 if (!disguiseSoName.isNullOrBlank() && Regex("[A-Za-z0-9_-]+").matches(disguiseSoName.trim())) {
                     val abiAlias = mapOf("arm64-v8a" to "arm64", "armeabi-v7a" to "arm", "x86" to "x86", "x86_64" to "x86_64")
                     val disguiseAbis = mutableListOf<String>()
-                    for (targetAbi in targetAbis) {
+                    for (targetAbi in soTargets) {
                         val disguiseEntryName = "lib/$targetAbi/lib$disguiseSoName.so"
                         if (existingEntries.contains(disguiseEntryName)) continue
                         val abiDirName = abiAlias[targetAbi] ?: targetAbi
