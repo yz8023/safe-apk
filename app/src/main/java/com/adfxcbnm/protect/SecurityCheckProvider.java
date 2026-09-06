@@ -18,6 +18,7 @@ import android.util.Log;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.InputStreamReader;
 import java.security.MessageDigest;
 import java.util.Arrays;
@@ -35,6 +36,7 @@ public class SecurityCheckProvider extends ContentProvider {
     private static volatile boolean crashHandlerInstalled = false;
 
     private static native void nativeKill();
+    private static native void nativeInstallCrashHandler(String path);
     private static final Map<String, String> RESULT_TO_FEATURE = new HashMap<>();
     private static volatile Set<String> enabled = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static volatile Map<String, Boolean> results = new java.util.concurrent.ConcurrentHashMap<>();
@@ -102,6 +104,7 @@ public class SecurityCheckProvider extends ContentProvider {
             loadNativeLib();
             if (nativeOk) {
                 try {
+                    installNativeCrashHandler();
                     nativeSelfProtect(enabled.contains(S.t(S.frida_detect)));
                 } catch (Throwable t) {
                     Log.w(TAG, S.t(S.nativeSelfProtect_failed), t);
@@ -148,27 +151,60 @@ public class SecurityCheckProvider extends ContentProvider {
         });
     }
 
-    private static void writeCrashLog(String message, Throwable t) {
+    private static void installNativeCrashHandler() {
         try {
             if (appContext == null) return;
             File logDir = appContext.getFilesDir();
+            try {
+                File extDir = appContext.getExternalFilesDir(null);
+                if (extDir != null) logDir = extDir;
+            } catch (Throwable ignored) {}
             File logFile = new File(logDir, S.t(S.adfxcbnm_crash_log));
-            java.io.FileWriter fw = new java.io.FileWriter(logFile, true);
+            try {
+                nativeInstallCrashHandler(logFile.getAbsolutePath());
+            } catch (Throwable t) {
+                Log.w(TAG, "nativeInstallCrashHandler failed", t);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void writeCrashLog(String message, Throwable t) {
+        try {
+            if (appContext == null) return;
             java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US);
             String time = sdf.format(new java.util.Date());
-            fw.write("[" + time + "] " + message + "\n");
+            StringBuilder sb = new StringBuilder();
+            sb.append("[").append(time).append("] ").append(message).append("\n");
+            sb.append("  pkg=").append(appContext.getPackageName());
+            sb.append(" pid=").append(android.os.Process.myPid());
+            sb.append(" tid=").append(android.os.Process.myTid()).append("\n");
+            sb.append("  nativeOk=").append(nativeOk);
+            sb.append(" features=").append(new java.util.ArrayList<>(enabled).toString()).append("\n");
             if (t != null) {
-                fw.write("  Exception: " + t.getClass().getName() + ": " + t.getMessage() + "\n");
+                sb.append("  Exception: ").append(t.getClass().getName()).append(": ").append(t.getMessage()).append("\n");
                 StackTraceElement[] stack = t.getStackTrace();
                 for (int i = 0; i < Math.min(stack.length, 20); i++) {
-                    fw.write("    at " + stack[i].toString() + "\n");
+                    sb.append("    at ").append(stack[i].toString()).append("\n");
                 }
                 Throwable cause = t.getCause();
                 if (cause != null) {
-                    fw.write("  Caused by: " + cause.getClass().getName() + ": " + cause.getMessage() + "\n");
+                    sb.append("  Caused by: ").append(cause.getClass().getName()).append(": ").append(cause.getMessage()).append("\n");
                 }
             }
-            fw.close();
+            String content = sb.toString();
+            File[] targets = new File[]{new File(appContext.getFilesDir(), S.t(S.adfxcbnm_crash_log))};
+            try {
+                File extDir = appContext.getExternalFilesDir(null);
+                if (extDir != null) targets = new File[]{new File(extDir, S.t(S.adfxcbnm_crash_log)), targets[0]};
+            } catch (Throwable ignored) {}
+            for (File logFile : targets) {
+                try {
+                    FileWriter fw = new FileWriter(logFile, true);
+                    fw.write(content);
+                    fw.close();
+                } catch (Throwable ignored) {}
+            }
+            Log.e("ADFXCBNM_CRASH", content);
         } catch (Throwable ignored) {}
     }
 
@@ -250,6 +286,7 @@ public class SecurityCheckProvider extends ContentProvider {
     }
 
     private static void runAllChecks(Context ctx) {
+        writeCrashLog("checks:start", null);
         put(S.t(S.root), enabled.contains(S.t(S.root_detect)) && detectRoot(ctx));
         put(S.t(S.magisk), enabled.contains(S.t(S.magisk_detect)) && detectMagisk());
         put(S.t(S.xposed), enabled.contains(S.t(S.xposed_detect)) && detectXposed());
@@ -276,6 +313,7 @@ public class SecurityCheckProvider extends ContentProvider {
         put(S.t(S.net_secure), enabled.contains(S.t(S.net_secure)) && detectMitmCert(ctx));
         put(S.t(S.env_testkeys), enabled.contains(S.t(S.env_testkeys)) && detectTestKeys());
         put(S.t(S.env_selinux), enabled.contains(S.t(S.env_selinux)) && detectSelinuxPermissive());
+        writeCrashLog("checks:done", null);
     }
 
     private static void enforce(Context ctx) {
