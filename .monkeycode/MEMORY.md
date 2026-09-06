@@ -94,3 +94,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 修复范式：凡需在既有方法体内插入/替换指令，必须用 `MutableMethodImplementation(MethodImplementation)` 复制方法体（构造函数会把全部 offset 指令经 codeAddress→index 映射转 label 式 builder 指令，插入/替换后 `fixInstructions` 自动重算所有偏移），不可直接拼接 backed 指令；该构造函数还会保留 tryBlocks/debugItems（用 `mapCodeAddressToIndex` 重新映射）。`FrostStringEncryptor.rewriteMethod` 与 `FrostReflectionClinitInjector.injectHelperCall` 均已按此修复（v9.10.4）。
   - 注意：`MutableMethodImplementation` 的 `registerCount` 是 `private final` 无 setter，需增寄存器时用匿名 `MethodImplementation` facade 覆盖 `getRegisterCount()` 透传 mutable 的 instructions/tryBlocks/debugItems（不可把 builder 指令抽出另包 Immutable，会丢 label 上下文）。
   - 本地 dex 级回归验证：javac+d8 构造含分支/goto/packed-switch 的样例 dex，java -cp 直调 pass 后遍历所有 `OffsetInstruction`，检查 `target = 指令起始+getCodeOffset()`（goto/if）或 `getCodeOffset()`（switch）是否落在指令起始边界集合，等价 ART verifier 检查；运行时需 `android.util.Log` stub（编译后的 app classes 会引用 android.util.Log，driver classpath 前置 stubout）。
+
+[Project Knowledge Summary]
+- Date: 2026-09-06
+- Context: Discovered by Agent while diagnosing v9.10.4 后加固产物仍闪退（onBackPressed instance field access on non-reference type Undefined）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - Dalvik 调用约定：参数寄存器锚定在寄存器区最高位（指向受 instruction 索引，offset 不迁移）。因此「提升方法 registerCount 以容纳临时寄存器」时，参数寄存器整体上移，但方法内指令（iget/iput/invoke 等）对参数寄存器的原始编号引用不会跟随迁移 —— ART verifier 在入口把最高位寄存器标为参数类型，指令却读取原编号位置（现为无定义 local），报 `instance field access on object that has non-reference type Undefined`（onBackPressed 首条 iget 即 [0x0]）。
+  - 修复范式：需要在既有方法内新增临时寄存器时，除用 `MutableMethodImplementation(MethodImplementation)` 复制（自动 label 化+fixInstructions 重算偏移，解决跳转目标错位）外，还必须在方法头部插入「参数搬移」指令——从提升后的新参数区（regCount-totalSlots 起）逐槽位搬回原参数区（baseRegs-totalSlots 起），this/引用用 MOVE_OBJECT_16、宽类型 MOVE_WIDE_16、其余 MOVE_16（32x 格式 BuilderInstruction32x(dst,src)）；临时寄存器放在参数区之上的新增空间（不与既有引用冲突）；头部新增指令数会让后续 target 索引整体偏移需 +headShift。上限检查 newRegCount = baseRegs + 参数槽数 + 额外寄存器数 ≤ 0xFFFF。
+  - dex 级双校验（等价 ART verifier）：① offset 指令目标（goto/if 相对=指令起始+offset，switch/payload 绝对=offset）落在指令起始边界；② 寄存器类型流——entry 参数区各槽位按参数类型标记（this/对象=引用），逐指令传播 MOVE/CONST String/invoke 结果/move-result，检查 iget/iput 对象寄存器与 AGET 数组寄存器必须为引用类型。用 javac+d8 构造 onBackPressed 分支形状、packed-switch、多参数（long+int+String+Object）样例验证。
+  - gh CLI 凭据再次失效时（HTTP 401），用 `echo -e "protocol=https\nhost=github.com\n" | git credential fill` 取 token 后 `gh auth login --with-token` 恢复（本环境 helper=/app/agent/bin/agent git-credential-helper，username=Forinxy）。
