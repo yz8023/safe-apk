@@ -135,3 +135,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - SIGKILL 无法被已安装的 crash handler 捕获（只注册了 SIGSEGV/ABRT/BUS/ILL/FPE/TRAP），所以无 adfxcbnm_crash.log、无 tombstone、无注入日志——这解释了"闪退但无任何日志"。
   - features.cfg 中 signature_sha256 取自 signEnabled 时加载的 signCert 证书 hash（MainActivity 2300 行），叠加签名用同一 signKey/signCert，故 sig_verify 自洽；真正冲突点是 anti_hook/anti_inject/runtime_protect/code_inject 对壳自身行为的误判。
   - 修复方向：工具 UI 启用 FrostShell 壳时，自动从 enabledFeatures 剔除/弱化 anti_hook、anti_inject、runtime_protect、code_inject（或 SecurityCheckProvider 增加"壳共存白名单"，识别 libvenSec/libbytehook 后跳过对应检测）。
+
+[Project Knowledge Summary]
+- Date: 2026-09-07
+- Context: Discovered by Agent while implementing FrostShell 壳冲突修复（强度+兼容性）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 壳共存修复范式（检测能区分"壳自身防护"与"攻击者 hook"，不简单关闭检测）：① native 层 isFunctionHooked 解码 ARM64 B/BL 指令 imm26 得跳转目标地址（target = pc + imm<<2，符号扩展），用 /proc/self/maps 判断目标所在库——落在 libc/libart/libvenSec/libsecurity_check 等可信库内放行，落在 frida/xposed/sandhook 等攻击库或匿名映射则判定为攻击；② detectLibcHook 壳共存时豁免；③ Java 层 SecurityCheckProvider 加 isShellCoexist()（读 maps 找 libvenSec/libbytehook），enforce 与 monitor 线程对 hook/inject/code_inject/runtime_protect 的 CRITICAL kill 豁免，但 frida/xposed/root/magisk/debugger 独立检测保留。
+  - 关键机制：SIGKILL 无法被 signal handler 捕获，所以"闪退无日志"基本指向 triggerKill→nativeKill→SIGKILL 路径，而非 SIGSEGV。Java 层 anti_hook 走 detectHookLibs()（maps 库名列表 XposedBridge/sandhook 等），native checkHookEnhanced 走 hookCheckFunctionPrologue 函数头指令检测——后者是 ByteHook 改写函数头的误判来源。
+  - 保护模块字符串全在 S_obfuscated.java 混淆（XOR K {0x12..0xF0}），新增字符串必须同样转成字节数组（python XOR 生成），Java 源码内禁止裸字符串。
+  - CMake POST_BUILD 只在 Gradle 编译对应 ABI 时更新 assets/lib so；assembleDebug 增量构建可能用缓存 APK 不含新 assets。手动替换 assets so 后必须强制重新构建（--offline assembleDebug），并校验 APK 内资源 sha256 与源码 assets 一致。native 修改同步两份 protection.cpp：FrostShell-CLI/engine/protect-module/src/ 与 app/src/main/cpp/。
