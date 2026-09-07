@@ -165,6 +165,8 @@ fun MainScreen() {
         mutableStateOf(prefs.getString("frost_method_filter_rules", "") ?: "")
     }
     var showMethodFilterDialog by remember { mutableStateOf(false) }
+    var methodFilterDialogTab by remember { mutableStateOf(0) }
+    var methodFilterHelpExpanded by remember { mutableStateOf(false) }
     var methodFilterPresetName by remember { mutableStateOf("") }
     var methodFilterPresetList by remember { mutableStateOf(listOf<MethodRuleTemplate.Preset>()) }
     var showMethodBrowser by remember { mutableStateOf(false) }
@@ -604,6 +606,7 @@ fun MainScreen() {
                                     prefs.edit().putBoolean("frost_method_filter_enabled", frostMethodFilterEnabled).apply()
                                     if (frostMethodFilterEnabled) {
                                         methodFilterInput = frostMethodFilterRules
+                                        methodFilterDialogTab = 0
                                         showMethodFilterDialog = true
                                     }
                                 },
@@ -628,6 +631,7 @@ fun MainScreen() {
                                     prefs.edit().putBoolean("frost_method_filter_enabled", it).apply()
                                     if (it) {
                                         methodFilterInput = frostMethodFilterRules
+                                        methodFilterDialogTab = 0
                                         showMethodFilterDialog = true
                                     }
                                 }
@@ -635,9 +639,34 @@ fun MainScreen() {
                         }
                         if (frostMethodFilterEnabled) {
                             Spacer(Modifier.height(8.dp))
+                            val ruleCount = frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.count()
+                            if (ruleCount > 0) {
+                                Text(
+                                    "已启用 · ${ruleCount} 条规则",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.take(4).joinToString("\n"),
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 4,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (ruleCount > 4) {
+                                    Text(
+                                        "... 其余 ${ruleCount - 4} 条",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
                             OutlinedButton(
                                 onClick = {
                                     methodFilterInput = frostMethodFilterRules
+                                    methodFilterDialogTab = 0
                                     showMethodFilterDialog = true
                                 },
                                 modifier = Modifier.fillMaxWidth().height(36.dp),
@@ -1505,6 +1534,7 @@ fun MainScreen() {
                         prefs.edit().putBoolean("frost_method_filter_enabled", it).apply()
                         if (it) {
                             methodFilterInput = frostMethodFilterRules
+                            methodFilterDialogTab = 0
                             showMethodFilterDialog = true
                         }
                     }
@@ -2344,72 +2374,136 @@ fun MainScreen() {
             onDismissRequest = { showMethodFilterDialog = false },
             title = { Text("仅抽取指定函数") },
             text = {
-                Column {
-                    Text(
-                        "每行一条规则。支持：精确(类.方法)、通配(类.*)、关键词(.*vip.*)、" +
-                            "类名正则(Lcom/example/.*;.onCreate)、整体正则(regex:)。" +
-                            "类名使用 dex 内部格式如 Lcom/example/MainActivity;.onCreate。" +
-                            "仅命中规则的方法被抽取（方法体加密），其余保留原始指令。留空表示不启用方法过滤。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = methodFilterInput,
-                        onValueChange = { methodFilterInput = it },
-                        modifier = Modifier.fillMaxWidth().height(180.dp),
-                        label = { Text("方法抽取规则（每行一条）") },
-                        placeholder = { Text("Lcom/example/MainActivity;.onCreate\nLcom/example/SecretApi;.*\n.*vip.*") },
-                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text("内置关键词模板：保存常用关键词规则到输入框", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(4.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                val kw = listOf("vip", "data", "info", "time", "login", "premium", "auth", "token", "user", "account", "verify", "pay", "check", "config", "session", "profile", "decrypt", "encrypt")
-                                val rules = kw.joinToString("\n") { ".*$it.*" }
-                                methodFilterInput = if (methodFilterInput.isBlank()) rules
-                                else methodFilterInput.trimEnd() + "\n" + rules
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("生成常用关键词") }
-                        Button(
-                            onClick = {
-                                val kw = listOf("login", "account", "password", "secret", "key", "encrypt", "decrypt", "verify", "pay", "vip", "premium")
-                                val rules = kw.joinToString("\n") { ".*$it.*" }
-                                methodFilterInput = rules
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("敏感业务关键词") }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = methodFilterPresetName,
-                            onValueChange = { methodFilterPresetName = it },
-                            modifier = Modifier.weight(1f).height(56.dp),
-                            label = { Text("方案名") }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // Tab 切换：规则编辑 / 方案模板
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = methodFilterDialogTab == 0,
+                            onClick = { methodFilterDialogTab = 0 },
+                            label = { Text("规则编辑", fontSize = 12.sp) }
                         )
-                        Button(onClick = {
-                            if (methodFilterPresetName.isNotBlank() && methodFilterInput.isNotBlank()) {
-                                MethodRuleTemplate.savePreset(context, methodFilterPresetName.trim(), methodFilterInput)
-                                methodFilterPresetList = MethodRuleTemplate.getCustomPresets(context)
-                                addLog("方案已保存: ${methodFilterPresetName.trim()}", LogType.SUCCESS)
-                            }
-                        }) { Text("保存方案") }
+                        FilterChip(
+                            selected = methodFilterDialogTab == 1,
+                            onClick = { methodFilterDialogTab = 1 },
+                            label = { Text("方案模板", fontSize = 12.sp) }
+                        )
                     }
-                    Spacer(Modifier.height(8.dp))
-                    val allPresets = MethodRuleTemplate.BUILTIN_PRESETS + methodFilterPresetList
-                    if (allPresets.isNotEmpty()) {
-                        Text("方案列表（点击加载，右侧 X 删除自定义）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(10.dp))
+
+                    if (methodFilterDialogTab == 0) {
+                        // ===== Tab0：规则编辑 =====
+                        OutlinedTextField(
+                            value = methodFilterInput,
+                            onValueChange = { methodFilterInput = it },
+                            modifier = Modifier.fillMaxWidth().height(200.dp),
+                            label = { Text("方法抽取规则（每行一条）") },
+                            placeholder = { Text("Lcom/example/MainActivity;.onCreate\nLcom/example/SecretApi;.*\n.*vip.*") },
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        // 实时统计
+                        val lines = methodFilterInput.lineSequence().filter { it.isNotBlank() }.toList()
+                        Text(
+                            buildString {
+                                append("共 ${lines.size} 条")
+                                val exact = lines.count { !it.contains('*') && !it.startsWith("regex:") }
+                                val wildcard = lines.count { it.contains('*') && !it.startsWith("regex:") }
+                                val regex = lines.count { it.startsWith("regex:") }
+                                if (exact > 0) append(" · 精确 $exact")
+                                if (wildcard > 0) append(" · 通配 $wildcard")
+                                if (regex > 0) append(" · 正则 $regex")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        // 语法说明（可折叠）
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { methodFilterHelpExpanded = !methodFilterHelpExpanded }) {
+                            Icon(
+                                if (methodFilterHelpExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("规则语法说明", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (methodFilterHelpExpanded) {
+                            Text(
+                                MethodRuleTemplate.FORMAT_HELP,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                if (selectedApkUri == null) {
+                                    addLog("请先选择 APK 再浏览其方法", LogType.WARNING)
+                                } else {
+                                    showMethodBrowser = true
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("浏览应用方法/类（搜索勾选生成规则）")
+                        }
+                    } else {
+                        // ===== Tab1：方案模板 =====
+                        Text("内置关键词模板：保存常用关键词规则到输入框", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(4.dp))
-                        LazyColumn(modifier = Modifier.height(140.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    val kw = listOf("vip", "data", "info", "time", "login", "premium", "auth", "token", "user", "account", "verify", "pay", "check", "config", "session", "profile", "decrypt", "encrypt")
+                                    val rules = kw.joinToString("\n") { ".*$it.*" }
+                                    methodFilterInput = if (methodFilterInput.isBlank()) rules
+                                    else methodFilterInput.trimEnd() + "\n" + rules
+                                    methodFilterDialogTab = 0
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("生成常用关键词") }
+                            Button(
+                                onClick = {
+                                    val kw = listOf("login", "account", "password", "secret", "key", "encrypt", "decrypt", "verify", "pay", "vip", "premium")
+                                    val rules = kw.joinToString("\n") { ".*$it.*" }
+                                    methodFilterInput = rules
+                                    methodFilterDialogTab = 0
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("敏感业务关键词") }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = methodFilterPresetName,
+                                onValueChange = { methodFilterPresetName = it },
+                                modifier = Modifier.weight(1f).height(56.dp),
+                                label = { Text("方案名") }
+                            )
+                            Button(onClick = {
+                                if (methodFilterPresetName.isNotBlank() && methodFilterInput.isNotBlank()) {
+                                    MethodRuleTemplate.savePreset(context, methodFilterPresetName.trim(), methodFilterInput)
+                                    methodFilterPresetList = MethodRuleTemplate.getCustomPresets(context)
+                                    addLog("方案已保存: ${methodFilterPresetName.trim()}", LogType.SUCCESS)
+                                }
+                            }) { Text("保存方案") }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        val allPresets = MethodRuleTemplate.BUILTIN_PRESETS + methodFilterPresetList
+                        Text("方案列表（点击加载到编辑区，右侧 X 删除自定义）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(4.dp))
+                        LazyColumn(modifier = Modifier.height(180.dp)) {
                             items(allPresets, key = { "${it.isBuiltin}_${it.name}" }) { preset ->
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                                     OutlinedButton(
-                                        onClick = { methodFilterInput = preset.rules },
+                                        onClick = {
+                                            methodFilterInput = preset.rules
+                                            methodFilterDialogTab = 0
+                                        },
                                         modifier = Modifier.weight(1f)
                                     ) {
                                         Text(preset.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2425,16 +2519,6 @@ fun MainScreen() {
                                 }
                             }
                         }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = {
-                        if (selectedApkUri == null) {
-                            addLog("请先选择 APK 再浏览其方法", LogType.WARNING)
-                        } else {
-                            showMethodBrowser = true
-                        }
-                    }, modifier = Modifier.fillMaxWidth()) {
-                        Text("浏览应用方法/类（搜索勾选生成规则）")
                     }
                 }
             },
