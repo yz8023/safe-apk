@@ -180,6 +180,27 @@ fun MainScreen() {
     var signAliasInput by remember { mutableStateOf("") }
     var signStorePassInput by remember { mutableStateOf("") }
     var signKeyPassInput by remember { mutableStateOf("") }
+    var showSigningToolDialog by remember { mutableStateOf(false) }
+    var signToolKeystorePath by remember { mutableStateOf("") }
+    var signToolStorePass by remember { mutableStateOf("") }
+    var signToolAlias by remember { mutableStateOf("") }
+    var signToolInfo by remember { mutableStateOf<com.adfxcbnm.hardeningtool.SigningTool.KeystoreInfo?>(null) }
+    var signToolLoading by remember { mutableStateOf(false) }
+    var signToolError by remember { mutableStateOf("") }
+    var signToolTab by remember { mutableStateOf(0) }
+    var signToolGenAlias by remember { mutableStateOf("") }
+    var signToolGenStorePass by remember { mutableStateOf("") }
+    var signToolGenKeyPass by remember { mutableStateOf("") }
+    var signToolGenKeyAlg by remember { mutableStateOf("RSA") }
+    var signToolGenKeySize by remember { mutableStateOf(2048) }
+    var signToolGenValidity by remember { mutableStateOf("36500") }
+    var signToolGenCn by remember { mutableStateOf("") }
+    var signToolGenOu by remember { mutableStateOf("") }
+    var signToolGenO by remember { mutableStateOf("") }
+    var signToolGenL by remember { mutableStateOf("") }
+    var signToolGenSt by remember { mutableStateOf("") }
+    var signToolGenC by remember { mutableStateOf("CN") }
+    var signToolGenResult by remember { mutableStateOf<com.adfxcbnm.hardeningtool.SigningTool.GeneratedKeystore?>(null) }
     var methodFilterInput by remember { mutableStateOf("") }
 
     var hardeningExpanded by remember { mutableStateOf(false) }
@@ -308,6 +329,30 @@ fun MainScreen() {
                 }
             } catch (e: Exception) {
                 addLog("导入keystore失败: ${e.message}", LogType.ERROR)
+            }
+        }
+    }
+
+    val signToolPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val ext = uri.lastPathSegment?.substringAfterLast(".", "p12") ?: "p12"
+                val target = File(context.filesDir, "signing_tool_keystore.$ext")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (target.exists() && target.length() > 0) {
+                    signToolKeystorePath = target.absolutePath
+                    signToolInfo = null
+                    signToolError = ""
+                    addLog("签名工具: 已加载 keystore ${target.name}", LogType.SUCCESS)
+                } else {
+                    signToolError = "keystore 文件读取失败"
+                }
+            } catch (e: Exception) {
+                signToolError = "导入失败: ${e.message}"
             }
         }
     }
@@ -1547,6 +1592,24 @@ fun MainScreen() {
                                     Text("清除", fontSize = 13.sp)
                                 }
                             }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    signToolKeystorePath = signKeystorePath
+                                    signToolStorePass = signStorePass
+                                    signToolAlias = signAlias
+                                    signToolTab = 0
+                                    signToolInfo = null
+                                    signToolError = ""
+                                    showSigningToolDialog = true
+                                },
+                                modifier = Modifier.fillMaxWidth().height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("签名工具 · 查看/生成 keystore", fontSize = 13.sp)
+                            }
                         }
                     }
                 }
@@ -1608,6 +1671,384 @@ fun MainScreen() {
             },
             dismissButton = {
                 TextButton(onClick = { showSignInfoDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // ===== 签名工具对话框：查看/生成 keystore =====
+    if (showSigningToolDialog) {
+        AlertDialog(
+            onDismissRequest = { showSigningToolDialog = false },
+            title = { Text("签名工具", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Tab 切换
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = signToolTab == 0,
+                            onClick = { signToolTab = 0 },
+                            label = { Text("查看签名信息", fontSize = 12.sp) }
+                        )
+                        FilterChip(
+                            selected = signToolTab == 1,
+                            onClick = { signToolTab = 1 },
+                            label = { Text("生成 keystore", fontSize = 12.sp) }
+                        )
+                    }
+
+                    if (signToolTab == 0) {
+                        // ===== 查看签名信息 =====
+                        Text(
+                            "选择 keystore 文件，输入密码（及别名）后读取证书签名信息。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedButton(
+                            onClick = { signToolPickerLauncher.launch(arrayOf("*/*")) },
+                            modifier = Modifier.fillMaxWidth().height(38.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (signToolKeystorePath.isNotEmpty())
+                                    File(signToolKeystorePath).name
+                                else
+                                    "选择 keystore / jks / p12",
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        OutlinedTextField(
+                            value = signToolStorePass,
+                            onValueChange = { signToolStorePass = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("存储密码 (store password)") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                        OutlinedTextField(
+                            value = signToolAlias,
+                            onValueChange = { signToolAlias = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("别名 (alias, 可选)") },
+                            singleLine = true
+                        )
+                        Button(
+                            onClick = {
+                                signToolError = ""
+                                signToolInfo = null
+                                signToolLoading = true
+                                val path = signToolKeystorePath
+                                val pass = signToolStorePass
+                                val alias = signToolAlias
+                                scope.launch {
+                                    val info = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        runCatching {
+                                            com.adfxcbnm.hardeningtool.SigningTool.loadKeystoreInfo(
+                                                File(path), pass, alias
+                                            )
+                                        }.getOrNull()
+                                    }
+                                    signToolLoading = false
+                                    if (info == null) {
+                                        signToolError = "读取失败：文件不存在 / 密码错误 / 格式不支持（支持 p12/pfx/jks/keystore/ks/bks）"
+                                    } else {
+                                        signToolInfo = info
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            enabled = signToolKeystorePath.isNotEmpty() && !signToolLoading,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            if (signToolLoading) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                                Spacer(Modifier.width(6.dp))
+                                Text("读取中...", fontSize = 13.sp)
+                            } else {
+                                Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("读取签名信息", fontSize = 13.sp)
+                            }
+                        }
+                        if (signToolError.isNotEmpty()) {
+                            Text(signToolError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        }
+                        signToolInfo?.let { info ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                                    InfoRow("文件", "${info.file} (${info.type})")
+                                    InfoRow("别名", info.alias)
+                                    InfoRow("Subject", info.subject)
+                                    InfoRow("Issuer", info.issuer)
+                                    InfoRow("有效期", "${info.notBefore} ~ ${info.notAfter}")
+                                    InfoRow("签名算法", info.signatureAlg)
+                                    InfoRow("密钥", "${info.keyAlg} ${info.keySize}")
+                                    InfoRow("SHA1", info.sha1)
+                                    InfoRow("SHA256", info.sha256)
+                                    InfoRow("MD5", info.md5)
+                                    Text(
+                                        "全部别名: ${info.aliases.joinToString(", ")}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        // ===== 生成 keystore =====
+                        Text(
+                            "自定义证书内容生成 keystore（PKCS12），或一键生成 RSA 4096 + 100 年有效期的超强签名。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Button(
+                            onClick = {
+                                signToolError = ""
+                                signToolGenResult = null
+                                val target = File(context.filesDir, "custom_sign_keystore.p12")
+                                scope.launch {
+                                    val gk = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        com.adfxcbnm.hardeningtool.SigningTool.generateProKeystore(
+                                            target, "adh"
+                                        ) { err -> signToolError = err }
+                                    }
+                                    signToolGenResult = gk
+                                    if (gk != null) {
+                                        signKeystorePath = gk.file.absolutePath
+                                        signStorePass = gk.storePass
+                                        signKeyPass = gk.keyPass
+                                        signAlias = gk.alias
+                                        prefs.edit()
+                                            .putString("sign_keystore_path", gk.file.absolutePath)
+                                            .putString("sign_store_pass", gk.storePass)
+                                            .putString("sign_key_pass", gk.keyPass)
+                                            .putString("sign_alias", gk.alias)
+                                            .apply()
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("一键生成超强签名 (RSA 4096 / 100年 / 随机强密码)", fontSize = 12.sp)
+                        }
+                        Divider(modifier = Modifier.padding(vertical = 4.dp))
+                        Text("自定义生成", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        OutlinedTextField(
+                            value = signToolGenAlias,
+                            onValueChange = { signToolGenAlias = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("别名 (alias)") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = signToolGenStorePass,
+                            onValueChange = { signToolGenStorePass = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("存储密码 (store password)") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                        OutlinedTextField(
+                            value = signToolGenKeyPass,
+                            onValueChange = { signToolGenKeyPass = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("密钥密码 (key password)") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = signToolGenCn,
+                                onValueChange = { signToolGenCn = it },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("CN 通用名") },
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = signToolGenC,
+                                onValueChange = { signToolGenC = it },
+                                modifier = Modifier.width(70.dp),
+                                label = { Text("国家 C") },
+                                singleLine = true
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = signToolGenO,
+                                onValueChange = { signToolGenO = it },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("组织 O") },
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = signToolGenOu,
+                                onValueChange = { signToolGenOu = it },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("部门 OU") },
+                                singleLine = true
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = signToolGenL,
+                                onValueChange = { signToolGenL = it },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("城市 L") },
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = signToolGenSt,
+                                onValueChange = { signToolGenSt = it },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("省份 ST") },
+                                singleLine = true
+                            )
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("密钥算法", fontSize = 12.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                listOf("RSA", "EC").forEach { alg ->
+                                    FilterChip(
+                                        selected = signToolGenKeyAlg == alg,
+                                        onClick = { signToolGenKeyAlg = alg },
+                                        label = { Text(alg, fontSize = 12.sp) }
+                                    )
+                                }
+                            }
+                        }
+                        if (signToolGenKeyAlg == "RSA") {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                listOf(2048, 3072, 4096).forEach { size ->
+                                    FilterChip(
+                                        selected = signToolGenKeySize == size,
+                                        onClick = { signToolGenKeySize = size },
+                                        label = { Text(size.toString(), fontSize = 12.sp) }
+                                    )
+                                }
+                            }
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                listOf(256, 384, 521).forEach { size ->
+                                    FilterChip(
+                                        selected = signToolGenKeySize == size,
+                                        onClick = { signToolGenKeySize = size },
+                                        label = { Text("P-$size", fontSize = 12.sp) }
+                                    )
+                                }
+                            }
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("有效期", fontSize = 12.sp)
+                            listOf(3650, 10000, 36500).forEach { days ->
+                                FilterChip(
+                                    selected = signToolGenValidity == days.toString(),
+                                    onClick = { signToolGenValidity = days.toString() },
+                                    label = { Text("${days / 365}年", fontSize = 12.sp) }
+                                )
+                            }
+                        }
+                        Button(
+                            onClick = {
+                                signToolError = ""
+                                signToolGenResult = null
+                                val alias = signToolGenAlias.trim().ifEmpty { "adh" }
+                                val storePass = signToolGenStorePass.ifEmpty { "android" }
+                                val keyPass = signToolGenKeyPass.ifEmpty { storePass }
+                                val cn = signToolGenCn.trim().ifEmpty { "Android App" }
+                                val target = File(context.filesDir, "custom_sign_keystore.p12")
+                                val spec = com.adfxcbnm.hardeningtool.SigningTool.KeystoreSpec(
+                                    alias, storePass, keyPass,
+                                    signToolGenKeyAlg, signToolGenKeySize,
+                                    signToolGenValidity.toIntOrNull() ?: 36500,
+                                    cn, signToolGenOu.trim(), signToolGenO.trim(),
+                                    signToolGenL.trim(), signToolGenSt.trim(), signToolGenC.trim().ifEmpty { "CN" }
+                                )
+                                scope.launch {
+                                    val gk = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        com.adfxcbnm.hardeningtool.SigningTool.generateKeystore(
+                                            target, spec
+                                        ) { err -> signToolError = err }
+                                    }
+                                    signToolGenResult = gk
+                                    if (gk != null) {
+                                        signKeystorePath = gk.file.absolutePath
+                                        signStorePass = storePass
+                                        signKeyPass = gk.keyPass
+                                        signAlias = gk.alias
+                                        prefs.edit()
+                                            .putString("sign_keystore_path", gk.file.absolutePath)
+                                            .putString("sign_store_pass", storePass)
+                                            .putString("sign_key_pass", gk.keyPass)
+                                            .putString("sign_alias", gk.alias)
+                                            .apply()
+                                        signToolStorePass = storePass
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("生成 keystore 并设为签名密钥", fontSize = 13.sp)
+                        }
+                        if (signToolError.isNotEmpty()) {
+                            Text(signToolError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        }
+                        signToolGenResult?.let { gk ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                                    Text("生成成功", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text(gk.file.absolutePath, fontSize = 11.sp)
+                                    gk.info?.let { info ->
+                                        InfoRow("别名", info.alias)
+                                        InfoRow("Subject", info.subject)
+                                        InfoRow("有效期至", info.notAfter)
+                                        InfoRow("SHA256", info.sha256)
+                                    }
+                                    Text(
+                                        if (gk.info?.keyAlg == "RSA") "已设为当前签名密钥" else "已设为当前签名密钥",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSigningToolDialog = false
+                    signToolInfo = null
+                    signToolGenResult = null
+                }) { Text("完成") }
             }
         )
     }
@@ -2044,6 +2485,24 @@ private fun SettingRow(
         if (showSwitch) {
             Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(
+            label,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(84.dp)
+        )
+        Text(
+            value,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
