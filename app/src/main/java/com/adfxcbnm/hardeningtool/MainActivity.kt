@@ -167,6 +167,9 @@ fun MainScreen() {
     var showMethodFilterDialog by remember { mutableStateOf(false) }
     var methodFilterDialogTab by remember { mutableStateOf(0) }
     var methodFilterHelpExpanded by remember { mutableStateOf(false) }
+    var methodHitSummary by remember { mutableStateOf("") }
+    var methodHitLoading by remember { mutableStateOf(false) }
+    var methodScanResult by remember { mutableStateOf<ApkMethodScanner.ScanResult?>(null) }
     var methodFilterPresetName by remember { mutableStateOf("") }
     var methodFilterPresetList by remember { mutableStateOf(listOf<MethodRuleTemplate.Preset>()) }
     var showMethodBrowser by remember { mutableStateOf(false) }
@@ -641,24 +644,27 @@ fun MainScreen() {
                             Spacer(Modifier.height(8.dp))
                             val ruleCount = frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.count()
                             if (ruleCount > 0) {
-                                Text(
-                                    "已启用 · ${ruleCount} 条规则",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.take(4).joinToString("\n"),
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 4,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                if (ruleCount > 4) {
+                                val firstRule = frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.firstOrNull().orEmpty()
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            "$ruleCount 条",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                    Spacer(Modifier.width(6.dp))
                                     Text(
-                                        "... 其余 ${ruleCount - 4} 条",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        firstRule.take(48) + if (firstRule.length > 48) "…" else "",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                                 Spacer(Modifier.height(6.dp))
@@ -2370,6 +2376,46 @@ fun MainScreen() {
             methodFilterPresetName = ""
             methodFilterInput = frostMethodFilterRules
         }
+
+        fun statHits(rulesText: String) {
+            val uri = selectedApkUri ?: run {
+                methodHitSummary = "未选择 APK，无法统计命中数"
+                return
+            }
+            if (methodHitLoading) return
+            methodHitLoading = true
+            methodHitSummary = ""
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    methodScanResult?.let { runCatching { it } }?.getOrNull()
+                        ?: runCatching {
+                            val path = OutputSettings.resolveApkPath(context, uri)
+                            val file = if (path != null && File(path).exists()) File(path)
+                            else {
+                                val tmp = File(context.cacheDir, "rule_hit_scan.apk")
+                                context.contentResolver.openInputStream(uri)?.use { input ->
+                                    tmp.outputStream().use { out -> input.copyTo(out) }
+                                }
+                                tmp
+                            }
+                            ApkMethodScanner.scan(file).also { methodScanResult = it }
+                        }.getOrNull()
+                }
+                methodHitLoading = false
+                if (result == null) {
+                    methodHitSummary = "扫描失败"
+                } else {
+                    val hits = ApkMethodScanner.countHits(result.entries, rulesText)
+                    val pct = if (result.entries.isEmpty()) 0 else (hits * 100 / result.entries.size)
+                    methodHitSummary = "当前规则将抽取 $hits / ${result.entries.size} 个方法 (约 $pct%)"
+                }
+            }
+        }
+        LaunchedEffect(methodFilterInput, methodFilterDialogTab) {
+            if (methodFilterDialogTab == 0 && methodFilterInput.isNotBlank()) {
+                statHits(methodFilterInput)
+            }
+        }
         AlertDialog(
             onDismissRequest = { showMethodFilterDialog = false },
             title = { Text("仅抽取指定函数") },
@@ -2416,6 +2462,23 @@ fun MainScreen() {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(Modifier.height(8.dp))
+                        // 命中统计
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (methodHitLoading) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                Text("统计中...", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            } else if (methodHitSummary.isNotEmpty()) {
+                                Text(
+                                    methodHitSummary,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (methodHitSummary.startsWith("当前规则")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                )
+                            }
+                            TextButton(onClick = { statHits(methodFilterInput) }, modifier = Modifier.height(30.dp)) {
+                                Text("重新统计", fontSize = 11.sp)
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         // 语法说明（可折叠）
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { methodFilterHelpExpanded = !methodFilterHelpExpanded }) {
@@ -2494,19 +2557,38 @@ fun MainScreen() {
                         }
                         Spacer(Modifier.height(8.dp))
                         val allPresets = MethodRuleTemplate.BUILTIN_PRESETS + methodFilterPresetList
-                        Text("方案列表（点击加载到编辑区，右侧 X 删除自定义）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("方案列表（点击加载并统计命中数，右侧 X 删除自定义）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(4.dp))
-                        LazyColumn(modifier = Modifier.height(180.dp)) {
+                        LazyColumn(modifier = Modifier.height(200.dp)) {
                             items(allPresets, key = { "${it.isBuiltin}_${it.name}" }) { preset ->
+                                val ruleCount = preset.rules.lineSequence().filter { it.isNotBlank() }.count()
+                                val isCurrent = preset.rules.trim() == methodFilterInput.trim()
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                                     OutlinedButton(
                                         onClick = {
                                             methodFilterInput = preset.rules
                                             methodFilterDialogTab = 0
+                                            statHits(preset.rules)
                                         },
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.weight(1f),
+                                        colors = if (isCurrent) ButtonDefaults.outlinedButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                        ) else ButtonDefaults.outlinedButtonColors()
                                     ) {
-                                        Text(preset.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Column(horizontalAlignment = Alignment.Start, modifier = Modifier.fillMaxWidth()) {
+                                            Text(
+                                                "${if (preset.isBuiltin) "☆ " else ""}${preset.name}",
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                fontSize = 12.sp
+                                            )
+                                            Text(
+                                                "$ruleCount 条规则",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
                                     if (!preset.isBuiltin) {
                                         IconButton(onClick = {
