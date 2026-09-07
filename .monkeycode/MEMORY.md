@@ -164,3 +164,12 @@ Entries discovered by the Agent during task execution should follow this format:
   - FrostShell 引擎路径（processFrostShellApk）的 sizeDiff 曾因 `val realSize = sourceInputSize` 误赋源大小而恒为 +0；正确做法是读实际输出文件大小：文件路径用 File.length()，content:// 输出用 ContentResolver 查询 OpenableColumns.SIZE（FileProvider 的 file_paths.xml 已配 root-path 覆盖全部路径，getUriForFile 可直接转任意路径）。
   - 结果对话框成功态含"复制目录/打开APK/关闭"三按钮；打开 APK 用 ACTION_VIEW + application/vnd.android.package-archive + FLAG_GRANT_READ_URI_PERMISSION，manifest 已有 REQUEST_INSTALL_PACKAGES。
   - 发布 release 时 gh CLI 凭据失效（Bad credentials），改用 `git credential fill`（helper 为 /app/agent/bin/agent git-credential-helper，账号 Forinxy）获取 password 作 Authorization: token 调 api.github.com 建 release、uploads.github.com 传 asset。
+
+[Project Knowledge Summary]
+- Date: 2026-09-06
+- Context: Discovered by Agent while implementing 签名工具(查看/生成keystore)
+- Category: Environment Configuration / Troubleshooting & Debugging
+- Instructions:
+  - 自签名 X.509 证书有效期超过 2049 年时不能再用 UTCTime(tag 0x17, 2位年)，必须按年份切换到 GeneralizedTime(tag 0x18, yyyyMMddHHmmssZ)，否则 X509 解析会把 2126 年错读成 2026 年。
+  - Java 调用 Kotlin object 需用 `Object.INSTANCE.method()`，onError 回调要 `Function1<String, Unit>`(返回 Unit.INSTANCE)；Compose 对话框内后台任务用 `scope.launch + withContext(Dispatchers.IO)`，不能直接用 Activity.runOnUiThread。
+  - keystore 类型自动检测：扩展名 jks/keystore/ks→JKS、bks→BKS、否则 PKCS12；用 linkedSetOf(extType, PKCS12, JKS, BKS) 逐个尝试，先按别名取 keyStore.getCertificate(alias)，无别名时取第一个 isKeyEntry 的 key 别名。指纹用 cert.encoded 做 SHA-1/SHA-256/MD5。
