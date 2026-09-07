@@ -1,0 +1,10 @@
+[
+  {"title": "VIP/会员身份", "keywords": ["vip", "isvip", "isVip", "premium", "isPremium", "isPaid", "isMember", "member", "svip", "isSvip"], "category": "登录态"},
+  {"title": "登录会话", "keywords": ["islogin", "isLogin", "isLogined", "isLoggedIn", "isLoginState", "loginState", "login_status", "isLoginStatus"], "category": "登录态"},
+  {"title": "用户信息", "keywords": ["info", "userInfo", "user_info", "userId", "user_id", "loginInfo", "login_info"], "category": "登录态"},
+  {"title": "过期时间", "keywords": ["expireTime", "expire_time", "expiresIn", "expires_in", "validUntil", "endTime", "deadline"], "category": "登录态"},
+  {"title": "Token/密钥", "keywords": ["token", "accessToken", "access_token", "refreshToken", "refresh_token", "apiKey", "api_key", "secret", "signKey", "sign_key"], "category": "敏感数据"},
+  {"title": "接口/请求", "keywords": ["baseUrl", "base_url", "apiUrl", "api_url", "endpoint", "appId", "app_id", "channelId", "channel_id"], "category": "敏感数据"},
+  {"title": "设备/网络", "keywords": ["deviceId", "device_id", "imei", "mac", "androidId", "android_id", "fingerprint", "wifiName", "wifi_name"], "category": "设备指纹"},
+  {"title": "加解密", "keywords": ["encrypt", "decrypt", "cipher", "aesKey", "aes_key", "iv", "salt", "nonce", "signature"], "category": "加解密"}
+]

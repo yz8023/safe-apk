@@ -1,31 +1,57 @@
 package com.adfxcbnm.frostshell.res
 
+import com.adfxcbnm.hardeningtool.AndroidManifestModifier
 import com.adfxcbnm.frostshell.util.FrostIoUtils
-import com.wind.meditor.core.FileProcesser
-import com.wind.meditor.property.AttributeItem
-import com.wind.meditor.property.ModificationProperty
 import pxb.android.axml.AxmlParser
 
 object FrostApkManifestEditor {
     @JvmStatic
     fun writeApplicationName(inManifestFile: String, outManifestFile: String, newApplicationName: String) {
-        val property = ModificationProperty()
-        property.addApplicationAttribute(AttributeItem("name", newApplicationName))
-        FileProcesser.processManifestFile(inManifestFile, outManifestFile, property)
+        applyApplicationAttribute(inManifestFile, outManifestFile, "name", newApplicationName)
     }
 
     @JvmStatic
     fun writeAppComponentFactory(inManifestFile: String, outManifestFile: String, newComponentFactory: String) {
-        val property = ModificationProperty()
-        property.addApplicationAttribute(AttributeItem("appComponentFactory", newComponentFactory))
-        FileProcesser.processManifestFile(inManifestFile, outManifestFile, property)
+        applyApplicationAttribute(inManifestFile, outManifestFile, "appComponentFactory", newComponentFactory)
     }
 
     @JvmStatic
     fun writeDebuggable(inManifestFile: String, outManifestFile: String, debuggable: String) {
-        val property = ModificationProperty()
-        property.addApplicationAttribute(AttributeItem("debuggable", debuggable))
-        FileProcesser.processManifestFile(inManifestFile, outManifestFile, property)
+        applyApplicationAttribute(
+            inManifestFile,
+            outManifestFile,
+            "debuggable",
+            debuggable,
+            AndroidManifestModifier.ApplicationAttrPatch.BOOLEAN_TYPE
+        )
+    }
+
+    @JvmStatic
+    fun writeApplicationExtractNativeLibs(inManifestFile: String, outManifestFile: String, extractNativeLibs: String) {
+        applyApplicationAttribute(
+            inManifestFile,
+            outManifestFile,
+            "extractNativeLibs",
+            extractNativeLibs,
+            AndroidManifestModifier.ApplicationAttrPatch.BOOLEAN_TYPE
+        )
+    }
+
+    private fun applyApplicationAttribute(
+        inManifestFile: String,
+        outManifestFile: String,
+        attrName: String,
+        attrValue: String,
+        attrType: Int = AndroidManifestModifier.ApplicationAttrPatch.STRING_TYPE
+    ) {
+        val manifestData = FrostIoUtils.readFile(inManifestFile)
+        val result = AndroidManifestModifier.modifyManifest(
+            manifestData,
+            appAttrs = listOf(
+                AndroidManifestModifier.ApplicationAttrPatch(attrName, attrValue, attrType)
+            )
+        )
+        FrostIoUtils.writeFile(outManifestFile, result.data)
     }
 
     @JvmStatic

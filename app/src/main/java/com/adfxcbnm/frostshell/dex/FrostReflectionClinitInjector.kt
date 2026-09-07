@@ -6,6 +6,7 @@ import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.DexFileFactory
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.Opcodes
+import com.android.tools.smali.dexlib2.base.reference.BaseTypeReference
 import com.android.tools.smali.dexlib2.builder.MutableMethodImplementation
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction10x
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction11n
@@ -14,12 +15,13 @@ import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction21s
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction22c
 import com.android.tools.smali.dexlib2.builder.instruction.BuilderInstruction35c
 import com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
+import com.android.tools.smali.dexlib2.iface.Annotation
 import com.android.tools.smali.dexlib2.iface.ClassDef
+import com.android.tools.smali.dexlib2.iface.DexFile
+import com.android.tools.smali.dexlib2.iface.Field
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.MethodImplementation
 import com.android.tools.smali.dexlib2.iface.instruction.Instruction
-import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef
-import com.android.tools.smali.dexlib2.immutable.ImmutableDexFile
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c
@@ -28,6 +30,7 @@ import com.android.tools.smali.dexlib2.immutable.reference.ImmutableTypeReferenc
 import java.io.File
 import java.io.IOException
 import java.util.Collections
+import java.util.LinkedHashSet
 
 object FrostReflectionClinitInjector {
     private const val MAX_METHODS_PER_DEX = 65535
@@ -83,21 +86,22 @@ object FrostReflectionClinitInjector {
                 arrayList.add(classDef)
                 continue
             }
-            val arrayList2 = ArrayList<Method>()
-            for (method in classDef.methods) {
+            val directMethods = ArrayList<Method>()
+            for (method in classDef.directMethods) {
                 if (helperRef != null && "<clinit>" == method.name) {
-                    arrayList2.add(injectHelperCall(method, helperRef))
+                    directMethods.add(injectHelperCall(method, helperRef))
                 } else {
-                    arrayList2.add(method)
+                    directMethods.add(peelDebugInfo(method))
                 }
             }
             if (helpers != null) {
-                arrayList2.addAll(helpers)
+                directMethods.addAll(helpers)
             }
-            arrayList.add(ImmutableClassDefAdapter(classDef, arrayList2).build())
+            // 委托式 ClassDef：不重建方法集合（ImmutableClassDef 会对整类方法 TreeSet 排序引发 OOM）
+            arrayList.add(RewrittenClassDef(classDef, directMethods, classDef.virtualMethods))
         }
-        val immutableDexFile = ImmutableDexFile(dexFile.opcodes, arrayList)
-        DexFileFactory.writeDexFile(outputDex, immutableDexFile)
+        // 委托式 DexFile：保持 class 顺序，写入交给 DexPool，避免 ImmutableDexFile 内部再次排序
+        DexFileFactory.writeDexFile(outputDex, RewrittenDexFile(dexFile.opcodes, arrayList))
         FrostLogUtils.debug(
             "reflection clinit inject: helpers=%d, clinits=%d, methods=%d",
             state.helperRefs.size, state.clinitIndex, state.totalMethodCount
@@ -138,21 +142,16 @@ object FrostReflectionClinitInjector {
 
     private fun injectHelperCall(method: Method, helperRef: ImmutableMethodReference): Method {
         val implementation = method.implementation ?: return method
-        val originalInstructions = toInstructionList(implementation.instructions)
-        val newInstructions = ArrayList<Instruction>()
-        val invokeHelper = ImmutableInstruction35c(Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0, helperRef)
-        for (i in 0 until originalInstructions.size - 1) {
-            newInstructions.add(originalInstructions[i])
-        }
-        newInstructions.add(invokeHelper)
-        newInstructions.add(originalInstructions[originalInstructions.size - 1])
-        val newImplementation = ImmutableMethodImplementation(
-            implementation.registerCount, newInstructions, implementation.tryBlocks,
-            Collections.emptyList()
+        // MutableMethodImplementation 复制会将 offset 指令转为 label 式 builder 指令，
+        // 插入 invoke 后自动重算全部跳转偏移，避免 backed 指令偏移错位（ART VerifyError）。
+        val mutable = MutableMethodImplementation(implementation)
+        mutable.addInstruction(
+            mutable.instructions.size - 1,
+            BuilderInstruction35c(Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0, helperRef)
         )
         return ImmutableMethod(
             method.definingClass, method.name, method.parameters, method.returnType, method.accessFlags,
-            method.annotations, method.hiddenApiRestrictions, newImplementation
+            method.annotations, method.hiddenApiRestrictions, mutable
         )
     }
 
@@ -255,42 +254,21 @@ object FrostReflectionClinitInjector {
         }
     }
 
-private class ImmutableClassDefAdapter(
-        private val source: ClassDef,
-        private val methods: List<Method>
-    ) {
-        fun build(): ClassDef {
-            return ImmutableClassDef(
-                source.type, source.accessFlags, source.superclass, source.interfaces,
-                source.sourceFile, source.annotations, source.fields, methods.map { peelDebugInfo(it) }
+    /**
+     * 剥离方法 debug 信息（不依赖 ImmutableClassDef 整体重建，避免大 dex OOM）。
+     */
+    private fun peelDebugInfo(method: Method): Method {
+        val impl = method.implementation ?: return method
+        if (impl.debugItems.any()) {
+            val stripped = ImmutableMethodImplementation(
+                impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
+            )
+            return ImmutableMethod(
+                method.definingClass, method.name, method.parameters, method.returnType,
+                method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
             )
         }
-
-        private fun peelDebugInfo(method: Method): Method {
-            if (method !is ImmutableMethod) {
-                val impl = method.implementation
-                if (impl != null) {
-                    val stripped = ImmutableMethodImplementation(
-                        impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
-                    )
-                    return ImmutableMethod(
-                        method.definingClass, method.name, method.parameters, method.returnType,
-                        method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
-                    )
-                }
-                return method
-            }
-            val impl = method.implementation
-            if (impl != null && impl.debugItems.isNotEmpty()) {
-                val stripped = ImmutableMethodImplementation(
-                    impl.registerCount, impl.instructions, impl.tryBlocks, Collections.emptyList()
-                )
-                return ImmutableMethod(
-                    method.definingClass, method.name, method.parameters, method.returnType,
-                    method.accessFlags, method.annotations, method.hiddenApiRestrictions, stripped
-                )
-            }
-            return method
-        }
+        return method
     }
-}
+
+    }

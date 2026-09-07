@@ -13,8 +13,8 @@ android {
         applicationId = "Forinxy.safe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 36
-        versionName = "9.6.5"
+        versionCode = 47
+        versionName = "9.10.5"
 
         vectorDrawables {
             useSupportLibrary = true

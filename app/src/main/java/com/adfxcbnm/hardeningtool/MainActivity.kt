@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,8 +55,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.6.5"
-private const val CONFIG_VERSION = "9.6.5"
+private const val APP_VERSION = "9.7.0"
+private const val CONFIG_VERSION = "9.7.0"
 
 
 
@@ -157,6 +158,16 @@ fun MainScreen() {
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
     var frostSoRandomization by remember { mutableStateOf(prefs.getBoolean("frost_so_randomization", false)) }
+    var frostStringEncrypt by remember { mutableStateOf(prefs.getBoolean("frost_string_encrypt", false)) }
+    var frostStringEncryptMinLen by remember { mutableStateOf(prefs.getInt("frost_string_encrypt_min_len", 6)) }
+    var frostMethodFilterEnabled by remember { mutableStateOf(prefs.getBoolean("frost_method_filter_enabled", false)) }
+    var frostMethodFilterRules by remember {
+        mutableStateOf(prefs.getString("frost_method_filter_rules", "") ?: "")
+    }
+    var showMethodFilterDialog by remember { mutableStateOf(false) }
+    var methodFilterPresetName by remember { mutableStateOf("") }
+    var methodFilterPresetList by remember { mutableStateOf(listOf<MethodRuleTemplate.Preset>()) }
+    var showMethodBrowser by remember { mutableStateOf(false) }
     var frostDisguiseEnabled by remember { mutableStateOf(prefs.getBoolean("frost_disguise_enabled", false)) }
     var frostDisguiseName by remember { mutableStateOf(prefs.getString("frost_disguise_name", "") ?: "") }
     var showDisguiseDialog by remember { mutableStateOf(false) }
@@ -169,6 +180,7 @@ fun MainScreen() {
     var signAliasInput by remember { mutableStateOf("") }
     var signStorePassInput by remember { mutableStateOf("") }
     var signKeyPassInput by remember { mutableStateOf("") }
+    var methodFilterInput by remember { mutableStateOf("") }
 
     var hardeningExpanded by remember { mutableStateOf(false) }
     var protectionExpanded by remember { mutableStateOf(false) }
@@ -450,7 +462,7 @@ fun MainScreen() {
 
                 Spacer(Modifier.height(10.dp))
 
-                // 输出目录设置卡片
+                // 签名开关卡片
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -464,81 +476,127 @@ fun MainScreen() {
                                 modifier = Modifier.size(28.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
                                 }
                             }
                             Spacer(Modifier.width(8.dp))
-                            Text("输出目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text("加固后签名", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                         }
-                        Spacer(Modifier.height(10.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            shape = RoundedCornerShape(10.dp)
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                signEnabled = !signEnabled
+                                prefs.edit().putBoolean("sign_enabled", signEnabled).apply()
+                                addLog(if (signEnabled) "签名已开启" else "签名已关闭，将输出未签名APK", LogType.INFO)
+                            },
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("加固产物自动签名", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "关闭后输出未签名APK，需自行签名",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = signEnabled,
+                                onCheckedChange = {
+                                    signEnabled = it
+                                    prefs.edit().putBoolean("sign_enabled", it).apply()
+                                    addLog(if (it) "签名已开启" else "签名已关闭，将输出未签名APK", LogType.INFO)
+                                }
+                            )
+                        }
+                        if (signEnabled) {
+                            Spacer(Modifier.height(4.dp))
                             Text(
-                                text = when {
-                                    outputToSource -> "源文件路径（所选APK所在目录）"
-                                    outputDirCustom != null -> outputDirCustom!!
-                                    else -> "默认（跟随所选APK所在目录）"
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                text = if (signKeystorePath.isNotEmpty())
+                                    "自定义keystore: ${File(signKeystorePath).name}"
+                                else
+                                    "默认调试keystore (adh_debug.p12)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // 函数抽取卡片
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = CircleShape,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Code, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text("函数抽取", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(10.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth().clickable { toggleOutputToSource() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    frostMethodFilterEnabled = !frostMethodFilterEnabled
+                                    prefs.edit().putBoolean("frost_method_filter_enabled", frostMethodFilterEnabled).apply()
+                                    if (frostMethodFilterEnabled) {
+                                        methodFilterInput = frostMethodFilterRules
+                                        showMethodFilterDialog = true
+                                    }
+                                },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("输出到源文件路径", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("仅抽取指定函数", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    "将加固产物输出到所选APK所在目录",
+                                    if (frostMethodFilterEnabled) {
+                                        "方法级抽取 (已配置${frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.count()}条规则)，未命中函数保留明文"
+                                    } else {
+                                        "方法级抽取：只抽取关键函数，其余保留"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Switch(
-                                checked = outputToSource,
-                                onCheckedChange = { toggleOutputToSource() }
+                                checked = frostMethodFilterEnabled,
+                                onCheckedChange = {
+                                    frostMethodFilterEnabled = it
+                                    prefs.edit().putBoolean("frost_method_filter_enabled", it).apply()
+                                    if (it) {
+                                        methodFilterInput = frostMethodFilterRules
+                                        showMethodFilterDialog = true
+                                    }
+                                }
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilledTonalButton(
-                                onClick = { outputDirPickerLauncher.launch(null) },
-                                modifier = Modifier.weight(1f).height(36.dp),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("选择目录", fontSize = 13.sp)
-                            }
+                        if (frostMethodFilterEnabled) {
+                            Spacer(Modifier.height(8.dp))
                             OutlinedButton(
                                 onClick = {
-                                    outputDirTextInput = outputDirCustom ?: ""
-                                    showOutputDirTextDialog = true
+                                    methodFilterInput = frostMethodFilterRules
+                                    showMethodFilterDialog = true
                                 },
-                                modifier = Modifier.weight(1f).height(36.dp),
+                                modifier = Modifier.fillMaxWidth().height(36.dp),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
-                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("手动输入", fontSize = 13.sp)
-                            }
-                            TextButton(
-                                onClick = {
-                                    OutputSettings.setCustomDir(context, null)
-                                    OutputSettings.setSafUri(context, null)
-                                    outputDirCustom = null
-                                    addLog("输出目录已恢复默认", LogType.INFO)
-                                },
-                                modifier = Modifier.height(36.dp)
-                            ) {
-                                Text("恢复默认", fontSize = 13.sp)
+                                Text("配置抽取规则", fontSize = 13.sp)
                             }
                         }
                     }
@@ -656,11 +714,20 @@ fun MainScreen() {
                             soRandomization = frostSoRandomization,
                             disguiseSoName = if (frostDisguiseEnabled && frostDisguiseName.isNotBlank()) frostDisguiseName.trim() else null,
                             excludedAbi = if (frostExcludedAbi.isEmpty()) null else frostExcludedAbi.toList(),
+                            stringEncrypt = frostStringEncrypt,
+                            stringEncryptMinLen = frostStringEncryptMinLen,
+                            stringEncryptKeywords = if (frostStringEncrypt) loadStringEncryptKeywords(context) else null,
                             signEnabled = signEnabled,
                             signKeystorePath = signKeystorePath.ifEmpty { null },
                             signAlias = signAlias.ifEmpty { null },
                             signStorePass = signStorePass.ifEmpty { null },
-                            signKeyPass = signKeyPass.ifEmpty { null }
+                            signKeyPass = signKeyPass.ifEmpty { null },
+                            extractMethodRules = if (frostMethodFilterEnabled) {
+                                frostMethodFilterRules.lineSequence()
+                                    .map { it.trim() }
+                                    .filter { it.isNotEmpty() }
+                                    .toList()
+                            } else null
                         )
                         scope.launch {
                             val result = if (useFrostEngine) {
@@ -1359,6 +1426,34 @@ fun MainScreen() {
                         prefs.edit().putBoolean("frost_verify_sign", it).apply()
                     }
                 )
+                SettingRow(
+                    icon = Icons.Default.Lock,
+                    title = "字符串加密",
+                    subtitle = "敏感字符串加密 (L1 string-encrypt)",
+                    checked = frostStringEncrypt,
+                    onCheckedChange = {
+                        frostStringEncrypt = it
+                        prefs.edit().putBoolean("frost_string_encrypt", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.FavoriteBorder,
+                    title = "仅抽取指定函数",
+                    subtitle = if (frostMethodFilterEnabled) {
+                        "方法级抽取 (已配置${frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.count()}条规则)，未命中函数保留明文"
+                    } else {
+                        "方法级抽取：只抽取关键函数，其余保留 (extract-method-filter)"
+                    },
+                    checked = frostMethodFilterEnabled,
+                    onCheckedChange = {
+                        frostMethodFilterEnabled = it
+                        prefs.edit().putBoolean("frost_method_filter_enabled", it).apply()
+                        if (it) {
+                            methodFilterInput = frostMethodFilterRules
+                            showMethodFilterDialog = true
+                        }
+                    }
+                )
                 Spacer(Modifier.height(8.dp))
                 Text("剔除 ABI（未勾选的将保留）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -1386,17 +1481,6 @@ fun MainScreen() {
                 Spacer(Modifier.height(16.dp))
                 Text("签名设置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
-                SettingRow(
-                    icon = Icons.Default.Lock,
-                    title = "加固后签名",
-                    subtitle = "关闭后输出未签名APK，需自行签名",
-                    checked = signEnabled,
-                    onCheckedChange = {
-                        signEnabled = it
-                        prefs.edit().putBoolean("sign_enabled", it).apply()
-                        addLog(if (it) "签名已开启" else "签名已关闭，将输出未签名APK", LogType.INFO)
-                    }
-                )
                 if (signEnabled) {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1649,6 +1733,143 @@ fun MainScreen() {
             dismissButton = {
                 TextButton(onClick = { showDisguiseDialog = false }) { Text("关闭") }
             }
+        )
+    }
+
+    if (showMethodFilterDialog) {
+        LaunchedEffect(showMethodFilterDialog) {
+            methodFilterPresetList = MethodRuleTemplate.getCustomPresets(context)
+            methodFilterPresetName = ""
+            methodFilterInput = frostMethodFilterRules
+        }
+        AlertDialog(
+            onDismissRequest = { showMethodFilterDialog = false },
+            title = { Text("仅抽取指定函数") },
+            text = {
+                Column {
+                    Text(
+                        "每行一条规则。支持：精确(类.方法)、通配(类.*)、关键词(.*vip.*)、" +
+                            "类名正则(Lcom/example/.*;.onCreate)、整体正则(regex:)。" +
+                            "类名使用 dex 内部格式如 Lcom/example/MainActivity;.onCreate。" +
+                            "仅命中规则的方法被抽取（方法体加密），其余保留原始指令。留空表示不启用方法过滤。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = methodFilterInput,
+                        onValueChange = { methodFilterInput = it },
+                        modifier = Modifier.fillMaxWidth().height(180.dp),
+                        label = { Text("方法抽取规则（每行一条）") },
+                        placeholder = { Text("Lcom/example/MainActivity;.onCreate\nLcom/example/SecretApi;.*\n.*vip.*") },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("内置关键词模板：保存常用关键词规则到输入框", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                val kw = listOf("vip", "data", "info", "time", "login", "premium", "auth", "token", "user", "account", "verify", "pay", "check", "config", "session", "profile", "decrypt", "encrypt")
+                                val rules = kw.joinToString("\n") { ".*$it.*" }
+                                methodFilterInput = if (methodFilterInput.isBlank()) rules
+                                else methodFilterInput.trimEnd() + "\n" + rules
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("生成常用关键词") }
+                        Button(
+                            onClick = {
+                                val kw = listOf("login", "account", "password", "secret", "key", "encrypt", "decrypt", "verify", "pay", "vip", "premium")
+                                val rules = kw.joinToString("\n") { ".*$it.*" }
+                                methodFilterInput = rules
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("敏感业务关键词") }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = methodFilterPresetName,
+                            onValueChange = { methodFilterPresetName = it },
+                            modifier = Modifier.weight(1f).height(56.dp),
+                            label = { Text("方案名") }
+                        )
+                        Button(onClick = {
+                            if (methodFilterPresetName.isNotBlank() && methodFilterInput.isNotBlank()) {
+                                MethodRuleTemplate.savePreset(context, methodFilterPresetName.trim(), methodFilterInput)
+                                methodFilterPresetList = MethodRuleTemplate.getCustomPresets(context)
+                                addLog("方案已保存: ${methodFilterPresetName.trim()}", LogType.SUCCESS)
+                            }
+                        }) { Text("保存方案") }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    val allPresets = MethodRuleTemplate.BUILTIN_PRESETS + methodFilterPresetList
+                    if (allPresets.isNotEmpty()) {
+                        Text("方案列表（点击加载，右侧 X 删除自定义）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(4.dp))
+                        LazyColumn(modifier = Modifier.height(140.dp)) {
+                            items(allPresets, key = { "${it.isBuiltin}_${it.name}" }) { preset ->
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                    OutlinedButton(
+                                        onClick = { methodFilterInput = preset.rules },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(preset.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    if (!preset.isBuiltin) {
+                                        IconButton(onClick = {
+                                            MethodRuleTemplate.deletePreset(context, preset.name)
+                                            methodFilterPresetList = MethodRuleTemplate.getCustomPresets(context)
+                                        }) {
+                                            Icon(Icons.Default.Close, contentDescription = "删除", modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = {
+                        if (selectedApkUri == null) {
+                            addLog("请先选择 APK 再浏览其方法", LogType.WARNING)
+                        } else {
+                            showMethodBrowser = true
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) {
+                        Text("浏览应用方法/类（搜索勾选生成规则）")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    frostMethodFilterRules = methodFilterInput.trim()
+                    prefs.edit().putString("frost_method_filter_rules", frostMethodFilterRules).apply()
+                    showMethodFilterDialog = false
+                    addLog(
+                        if (frostMethodFilterRules.isBlank()) "方法过滤已清空（全量抽取）" else "方法过滤规则已保存: ${frostMethodFilterRules.trim().lineSequence().count { it.isNotBlank() }}条",
+                        LogType.INFO
+                    )
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMethodFilterDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showMethodBrowser) {
+        MethodBrowserDialog(
+            apkUri = selectedApkUri,
+            apkName = selectedApkName,
+            onDismiss = { showMethodBrowser = false },
+            onAppendRules = { newRules ->
+                if (newRules.isNotBlank()) {
+                    methodFilterInput = if (methodFilterInput.isBlank()) newRules
+                    else methodFilterInput.trimEnd() + "\n" + newRules
+                    addLog("已追加 ${newRules.lineSequence().count { it.isNotBlank() }} 条规则", LogType.INFO)
+                }
+            },
+            onError = { msg -> addLog(msg, LogType.ERROR) }
         )
     }
 }
@@ -2023,6 +2244,8 @@ private suspend fun processApk(
     val stages = StageTracker(addLog)
     lateinit var outputFile: File
     var tempFile: File? = null
+    var successfulOutput: String? = null
+    var signedFileSize: Long = 0
     try {
         val sourceApkPath = OutputSettings.resolveApkPath(context, apkUri)
         val (outputDir, dirSource) = OutputSettings.getOutputDir(context, sourceApkPath)
@@ -2192,8 +2415,10 @@ private suspend fun processApk(
                             val data = zis.readBytes()
                             try {
                                 val modResult = AndroidManifestModifier.modifyManifest(
-                                    data, context, enabledFeatures, targetPkg
-                                ) { msg -> log("manifest: $msg") }
+                                    data, context, enabledFeatures, targetPkg,
+                                    log = { msg -> log("manifest: $msg") },
+                                    appAttrs = emptyList()
+                                )
                                 manifestModified = modResult.modified
                                 if (manifestModified) {
                                     val authority = "com.adfxcbnm.authority" + if (targetPkg.isNotEmpty()) ".$targetPkg" else ""
@@ -2322,8 +2547,15 @@ private suspend fun processApk(
             }
             stages.begin("跳过签名")
             try {
-                intermediateFile.copyTo(outputFile, overwrite = true)
-                addLog("签名已禁用，输出未签名APK", LogType.WARNING)
+                val saved = OutputSettings.copyOutput(context, intermediateFile, outputFile)
+                signedFileSize = intermediateFile.length()
+                if (saved != null) {
+                    addLog("签名已禁用，输出未签名APK", LogType.WARNING)
+                    successfulOutput = saved
+                } else {
+                    addLog("签名已禁用，但输出落盘失败", LogType.ERROR)
+                    return@withContext ProcessResult(false, "", 0, "", 0f)
+                }
                 stages.end(LogType.WARNING, "未签名")
             } catch (copyErr: Exception) {
                 stages.end(LogType.ERROR, copyErr.message)
@@ -2343,15 +2575,43 @@ private suspend fun processApk(
                     addLog("apksig库不可用，无法签名", LogType.ERROR)
                     return@withContext ProcessResult(false, "", 0, "", 0f)
                 }
+                val outputParent = outputFile.parentFile
+                if (outputParent != null && !outputParent.exists() && !outputParent.mkdirs()) {
+                    addLog("输出目录不存在且创建失败: ${outputParent.absolutePath}", LogType.ERROR)
+                    return@withContext ProcessResult(false, "", 0, "", 0f)
+                }
+                if (outputFile.exists()) {
+                    runCatching { outputFile.delete() }
+                        .onFailure { addLog("清理旧输出文件失败: ${it.message}", LogType.WARNING) }
+                }
                 val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
+                val signedTmp = File(context.cacheDir, "${baseName}_signed_${System.currentTimeMillis()}.apk")
                 val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
                     .setV1SigningEnabled(true)
                     .setV2SigningEnabled(true)
                     .setInputApk(intermediateFile)
-                    .setOutputApk(outputFile)
+                    .setOutputApk(signedTmp)
                     .setMinSdkVersion(26)
                     .build()
                 apkSigner.sign()
+                if (!signedTmp.exists() || signedTmp.length() <= 0) {
+                    addLog("签名输出为空", LogType.ERROR)
+                    return@withContext ProcessResult(false, "", 0, "", 0f)
+                }
+                signedFileSize = signedTmp.length()
+                try {
+                    val saved = OutputSettings.copyOutput(context, signedTmp, outputFile)
+                    if (saved != null) {
+                        successfulOutput = saved
+                    } else {
+                        addLog("复制输出失败", LogType.ERROR)
+                    }
+                } catch (copyErr: Exception) {
+                    addLog("签名完成但复制到输出路径失败: ${copyErr.message}", LogType.ERROR)
+                    throw copyErr
+                } finally {
+                    runCatching { if (signedTmp.exists()) signedTmp.delete() }
+                }
                 addLog("签名完成 (v1+v2)", LogType.SUCCESS)
                 stages.end(LogType.SUCCESS)
             } catch (signErr: Exception) {
@@ -2366,14 +2626,18 @@ private suspend fun processApk(
         tempFile?.let { if (it.exists()) it.delete() }
         if (intermediateFile.exists()) intermediateFile.delete()
 
-        if (outputFile.exists() && outputFile.length() > 0) {
-            val sizeDiff = outputFile.length() - apkSize
+        val deliveredPath = successfulOutput
+        if (deliveredPath != null) {
+            val realSize = signedFileSize
+            val sizeDiff = realSize - apkSize
             val diffStr = if (sizeDiff >= 0) "+$sizeDiff" else "$sizeDiff"
             onProgress(1f)
             val elapsed = System.currentTimeMillis() - t0
-            val mb = outputFile.length() / (1024f * 1024f)
-            addLog("完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节", LogType.SUCCESS)
-            if (autoVerify) {
+            val mb = realSize / (1024f * 1024f)
+            val viaMediaStore = deliveredPath.startsWith("content://")
+            val logPath = if (viaMediaStore) deliveredPath else outputFile.absolutePath
+            addLog("完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节${if (viaMediaStore) "，已保存至系统下载" else ""}", LogType.SUCCESS)
+            if (autoVerify && !viaMediaStore) {
                 stages.begin("自动校验")
                 val (pass, total) = verifyHardenedApk(outputFile, detailLog)
                 if (pass == total) {
@@ -2385,7 +2649,7 @@ private suspend fun processApk(
                 }
             }
             stages.finish()
-            ProcessResult(true, outputFile.absolutePath, outputFile.length(), diffStr, 1f)
+            ProcessResult(true, logPath, realSize, diffStr, 1f)
         } else {
             addLog("输出文件不存在或为空", LogType.ERROR)
             stages.finish()
@@ -2461,6 +2725,8 @@ private suspend fun processFrostShellApk(
         if (frostOptions.smaller) detailLog("启用: 瘦身(smaller)")
         if (frostOptions.verifySign) detailLog("启用: 运行时验签(verify-sign)")
         if (frostOptions.soRandomization) detailLog("启用: 壳SO随机化")
+        if (frostOptions.stringEncrypt) detailLog("启用: 字符串加密(L1, minLen=${frostOptions.stringEncryptMinLen}, keywords=${frostOptions.stringEncryptKeywords?.size ?: 0})")
+        if (!frostOptions.extractMethodRules.isNullOrEmpty()) detailLog("启用: 仅抽取指定函数(${frostOptions.extractMethodRules.size}条规则)")
         frostOptions.disguiseSoName?.let { detailLog("启用: 伪装加固(lib$it.so)") }
         frostOptions.excludedAbi?.let { detailLog("启用: 剔除ABI ${it.joinToString(",")}") }
         if (frostOptions.soRandomization) {
@@ -2509,6 +2775,7 @@ private suspend fun processFrostShellApk(
         val sourceInputSize = inputFile.length()
         inputFile.delete()
         if (outApk != null && outApk!!.exists() && outApk!!.length() > 0) {
+            var deliveredPath: String? = null
             val overlayOk = overlayProtectionLayer(
                 context = context,
                 inputFile = outApk!!,
@@ -2523,22 +2790,25 @@ private suspend fun processFrostShellApk(
                 disguiseSoName = frostOptions.disguiseSoName,
                 addLog = addLog,
                 detailLog = detailLog,
-                onProgress = { p -> onProgress(0.9f + 0.1f * p) }
+                onProgress = { p -> onProgress(0.9f + 0.1f * p) },
+                onOutputSaved = { path -> deliveredPath = path }
             )
             outApk!!.delete()
-            if (!overlayOk || !outputFile.exists() || outputFile.length() <= 0) {
+            if (!overlayOk) {
                 addLog("叠加保护层未生成有效输出 APK", LogType.ERROR)
                 stages.finish()
                 return@withContext ProcessResult(false, "", 0, "", 0f)
             }
-            val sizeDiff = outputFile.length() - sourceInputSize
+            val viaMediaStore = deliveredPath != null && deliveredPath!!.startsWith("content://")
+            val realSize = sourceInputSize
+            val sizeDiff = realSize - sourceInputSize
             val diffStr = if (sizeDiff >= 0) "+$sizeDiff" else "$sizeDiff"
             val elapsed = System.currentTimeMillis() - t0
-            val mb = outputFile.length() / (1024f * 1024f)
-            addLog("引擎完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节", LogType.SUCCESS)
+            val mb = realSize / (1024f * 1024f)
+            addLog("引擎完成: ${String.format("%.2f", mb)}MB, 耗时${elapsed}ms, 增量${diffStr}字节${if (viaMediaStore) "，已保存至系统下载" else ""}", LogType.SUCCESS)
             onProgress(1f)
             stages.finish()
-            ProcessResult(true, outputFile.absolutePath, outputFile.length(), diffStr, 1f)
+            ProcessResult(true, deliveredPath ?: outputFile.absolutePath, realSize, diffStr, 1f)
         } else {
             addLog("引擎未生成有效输出 APK${if (engineError != null) ": $engineError" else ""}", LogType.ERROR)
             stages.finish()
@@ -2564,7 +2834,8 @@ private fun overlayProtectionLayer(
     disguiseSoName: String?,
     addLog: (String, LogType) -> Unit,
     detailLog: (String) -> Unit,
-    onProgress: (Float) -> Unit
+    onProgress: (Float) -> Unit,
+    onOutputSaved: ((String) -> Unit)? = null
 ): Boolean {
     return try {
         val allFeatures = hardening + protection
@@ -2799,24 +3070,39 @@ private fun overlayProtectionLayer(
         inputFile.delete()
 
         if (!signEnabled) {
-            intermediateFile.copyTo(outputFile, overwrite = true)
+            val saved = OutputSettings.copyOutput(context, intermediateFile, outputFile)
             intermediateFile.delete()
-            addLog("叠加完成，输出未签名APK (规则注入 ${enabledFeatures.size}项)", LogType.SUCCESS)
-            return true
+            addLog(
+                "叠加完成，输出未签名APK (规则注入 ${enabledFeatures.size}项)${if (saved != null) " @ $saved" else "，落盘失败"}",
+                if (saved != null) LogType.SUCCESS else LogType.ERROR
+            )
+            if (saved != null) onOutputSaved?.invoke(saved)
+            return saved != null
         }
         if (signKey == null || signCert == null) {
             addLog("叠加签名证书不可用", LogType.ERROR)
             return false
         }
+        val signedTmp = File(context.cacheDir, "${outputFile.nameWithoutExtension}_signed_${System.currentTimeMillis()}.apk")
         val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
         val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
             .setV1SigningEnabled(true)
             .setV2SigningEnabled(true)
             .setInputApk(intermediateFile)
-            .setOutputApk(outputFile)
+            .setOutputApk(signedTmp)
             .setMinSdkVersion(26)
             .build()
         apkSigner.sign()
+        if (!signedTmp.exists() || signedTmp.length() <= 0) {
+            addLog("叠加签名输出为空", LogType.ERROR)
+            return false
+        }
+        try {
+            val saved = OutputSettings.copyOutput(context, signedTmp, outputFile)
+            if (saved != null) onOutputSaved?.invoke(saved)
+        } finally {
+            runCatching { if (signedTmp.exists()) signedTmp.delete() }
+        }
         intermediateFile.delete()
         addLog("叠加完成并签名 (规则注入 ${enabledFeatures.size}项)", LogType.SUCCESS)
         true
@@ -2839,6 +3125,28 @@ private fun disguiseAssociateAssets(soName: String): List<String> {
         "zhizhu" to listOf("vender_marker_baidu.bin")
     )
     return envMarkers[lower]?.let { it + "finger_marker.bin" } ?: listOf("finger_marker.bin")
+}
+
+/**
+ * 从 assets/string_presets.json 读取 L1 字符串加密关键词集合。
+ * 格式：JSONArray[{title, keywords: [], category}]。
+ */
+private fun loadStringEncryptKeywords(context: Context): Set<String> {
+    return try {
+        val json = context.assets.open("string_presets.json").bufferedReader().use { it.readText() }
+        val arr = org.json.JSONArray(json)
+        val set = linkedSetOf<String>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.getJSONObject(i)
+            val keywords = obj.getJSONArray("keywords")
+            for (j in 0 until keywords.length()) {
+                set.add(keywords.getString(j))
+            }
+        }
+        set
+    } catch (e: Exception) {
+        emptySet()
+    }
 }
 
 private fun loadSigningKeyPair(
@@ -3138,4 +3446,208 @@ private fun buildFeatureConfig(
         }
     }
     return sb.toString().toByteArray(Charsets.UTF_8)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MethodBrowserDialog(
+    apkUri: Uri?,
+    apkName: String?,
+    onDismiss: () -> Unit,
+    onAppendRules: (String) -> Unit,
+    onError: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(true) }
+    var scanError by remember { mutableStateOf<String?>(null) }
+    var scanResult by remember { mutableStateOf<ApkMethodScanner.ScanResult?>(null) }
+    var query by remember { mutableStateOf("") }
+    var regexMode by remember { mutableStateOf(false) }
+    var onlyNonEmpty by remember { mutableStateOf(true) }
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    var mode by remember { mutableStateOf(0) }
+
+    val filtered = remember(scanResult, query, regexMode, selected, mode, scanError, loading, apkUri, apkName) {
+        val r = scanResult
+        if (r == null) emptyList()
+        else ApkMethodScanner.search(r.entries, query, regexMode)
+    }
+
+    fun refresh() {
+        val uri = apkUri ?: return
+        scope.launch(Dispatchers.IO) {
+            loading = true
+            scanError = null
+            try {
+                val path = OutputSettings.resolveApkPath(context, uri)
+                val file = if (path != null && File(path).exists()) File(path)
+                else {
+                    val tmp = File(context.cacheDir, "scan_${apkName ?: "apk"}.apk")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        tmp.outputStream().use { out -> input.copyTo(out) }
+                    }
+                    tmp
+                }
+                val result = ApkMethodScanner.scan(file)
+                scanResult = result
+            } catch (e: Exception) {
+                scanError = e.message ?: "扫描失败"
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    LaunchedEffect(apkUri, apkName) { refresh() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("浏览应用方法/类") },
+        text = {
+            Column {
+                if (loading) {
+                    Box(modifier = Modifier.fillMaxWidth().height(320.dp), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(8.dp))
+                            Text("正在解析 DEX...", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                } else if (scanError != null) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        Text("扫描失败: $scanError", color = MaterialTheme.colorScheme.error)
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { refresh() }) { Text("重试") }
+                    }
+                } else {
+                    val r = scanResult
+                    if (r == null) {
+                        Text("无数据")
+                    } else {
+                        Text(
+                            "共 ${r.classCount} 个类、${r.methodCount} 个方法。搜索后勾选，追加为抽取规则。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            label = { Text("搜索 类名/方法名") },
+                            singleLine = true
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = regexMode,
+                                    onCheckedChange = { regexMode = it }
+                                )
+                                Text("正则", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = onlyNonEmpty,
+                                    onCheckedChange = { onlyNonEmpty = it }
+                                )
+                                Text("仅非空方法", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text(
+                                "选中 ${selected.size}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = mode == 0,
+                                onClick = { mode = 0 },
+                                label = { Text("方法精确") }
+                            )
+                            FilterChip(
+                                selected = mode == 1,
+                                onClick = { mode = 1 },
+                                label = { Text("类+全部方法") }
+                            )
+                            FilterChip(
+                                selected = mode == 2,
+                                onClick = { mode = 2 },
+                                label = { Text("关键词后缀") }
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn(modifier = Modifier.height(260.dp)) {
+                            items(filtered.take(500), key = { it.uniqueKey }) { entry ->
+                                if (!onlyNonEmpty || entry.methodName != "<init>" && entry.methodName != "<clinit>") {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Checkbox(
+                                            checked = entry.uniqueKey in selected,
+                                            onCheckedChange = {
+                                                selected = if (it) selected + entry.uniqueKey
+                                                else selected - entry.uniqueKey
+                                            }
+                                        )
+                                        Text(
+                                            entry.display,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if (filtered.size > 500) {
+                            Text(
+                                "仅显示前 500 条，请细化搜索",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    val entryByKey = scanResult?.entries?.associateBy { it.uniqueKey } ?: emptyMap()
+                                    val selectedEntries = selected.mapNotNull { entryByKey[it] }
+                                    val rules: List<String> = when (mode) {
+                                        0 -> selectedEntries.sortedBy { it.display }.map { it.toRule() }
+                                        1 -> selectedEntries.map {
+                                            val idx = it.className.length
+                                            it.className + ".*"
+                                        }
+                                        else -> {
+                                            val words = LinkedHashSet<String>()
+                                            selectedEntries.forEach { entry ->
+                                                val word = Regex("^([a-zA-Z0-9_]+)").find(entry.methodName)?.groupValues?.get(0) ?: entry.methodName
+                                                if (word.length >= 2) words.add(word)
+                                            }
+                                            words.sorted().map { ".*$it.*" }
+                                        }
+                                    }
+                                    onAppendRules(rules.joinToString("\n"))
+                                    onDismiss()
+                                },
+                                enabled = selected.isNotEmpty(),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("将选中追加为规则")
+                            }
+                            TextButton(onClick = { selected = emptySet() }) { Text("清空勾选") }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
 }
