@@ -215,7 +215,9 @@ object SigningTool {
         val o: String,
         val l: String,
         val st: String,
-        val c: String
+        val c: String,
+        val notBeforeMillis: Long? = null,
+        val notAfterMillis: Long? = null
     )
 
     /**
@@ -230,8 +232,10 @@ object SigningTool {
         return try {
             val keyPair = generateKeyPair(spec.keyAlg, spec.keySize)
             val now = System.currentTimeMillis()
-            val notBefore = now - 24 * 60 * 60 * 1000L
-            val notAfter = now + spec.validityDays.toLong() * 24 * 60 * 60 * 1000L
+            val notBefore = spec.notBeforeMillis?.let { normalizeDateStart(it) }
+                ?: (now - 24 * 60 * 60 * 1000L)
+            val notAfter = spec.notAfterMillis?.let { normalizeDateEnd(it) }
+                ?: (now + spec.validityDays.toLong() * 24 * 60 * 60 * 1000L)
 
             val isEc = spec.keyAlg.equals("EC", true)
             val subject = buildDN(spec)
@@ -313,6 +317,36 @@ object SigningTool {
             generator.initialize(keySize.coerceAtLeast(2048), SecureRandom())
         }
         return generator.generateKeyPair()
+    }
+
+    private fun normalizeDateStart(millis: Long): Long {
+        return normalizeDateStart(java.util.Date(millis))
+    }
+
+    private fun normalizeDateEnd(millis: Long): Long {
+        return normalizeDateEnd(java.util.Date(millis))
+    }
+
+    /** 起始日期归一到当天 00:00:00 */
+    private fun normalizeDateStart(d: java.util.Date): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.time = d
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
+    }
+
+    /** 结束日期归一到当天 23:59:59（含当日整天） */
+    private fun normalizeDateEnd(d: java.util.Date): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.time = d
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 23)
+        cal.set(java.util.Calendar.MINUTE, 59)
+        cal.set(java.util.Calendar.SECOND, 59)
+        cal.set(java.util.Calendar.MILLISECOND, 999)
+        return cal.timeInMillis
     }
 
     fun randomStrongPassword(length: Int = 20): String {

@@ -196,6 +196,8 @@ fun MainScreen() {
     var signToolGenKeyAlg by remember { mutableStateOf("RSA") }
     var signToolGenKeySize by remember { mutableStateOf(2048) }
     var signToolGenValidity by remember { mutableStateOf("36500") }
+    var signToolGenNotBefore by remember { mutableStateOf("") }
+    var signToolGenNotAfter by remember { mutableStateOf("") }
     var signToolGenCn by remember { mutableStateOf("") }
     var signToolGenOu by remember { mutableStateOf("") }
     var signToolGenO by remember { mutableStateOf("") }
@@ -1964,15 +1966,42 @@ fun MainScreen() {
                                 }
                             }
                         }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = signToolGenNotBefore,
+                                onValueChange = { signToolGenNotBefore = it },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("生成日期 yyyy-MM-dd") },
+                                placeholder = { Text("留空=昨天") },
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = signToolGenNotAfter,
+                                onValueChange = { signToolGenNotAfter = it },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("到期日期 yyyy-MM-dd") },
+                                placeholder = { Text("留空=100年") },
+                                singleLine = true
+                            )
+                        }
+                        Text(
+                            "直接填写起止日期；留空时回退为快捷有效期：",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("有效期", fontSize = 12.sp)
+                            Text("快捷", fontSize = 12.sp)
                             listOf(3650, 10000, 36500).forEach { days ->
                                 FilterChip(
                                     selected = signToolGenValidity == days.toString(),
-                                    onClick = { signToolGenValidity = days.toString() },
+                                    onClick = {
+                                        signToolGenValidity = days.toString()
+                                        signToolGenNotBefore = ""
+                                        signToolGenNotAfter = ""
+                                    },
                                     label = { Text("${days / 365}年", fontSize = 12.sp) }
                                 )
                             }
@@ -1986,12 +2015,18 @@ fun MainScreen() {
                                 val keyPass = signToolGenKeyPass.ifEmpty { storePass }
                                 val cn = signToolGenCn.trim().ifEmpty { "Android App" }
                                 val target = File(context.filesDir, "custom_sign_keystore.p12")
+                                val nb = signToolGenNotBefore.trim().let { if (it.isNotEmpty()) parseDateMillis(it) else null }
+                                val na = signToolGenNotAfter.trim().let { if (it.isNotEmpty()) parseDateMillis(it) else null }
+                                if (nb != null && na != null && na <= nb) {
+                                    signToolError = "到期日期必须晚于生成日期"
+                                } else {
                                 val spec = com.adfxcbnm.hardeningtool.SigningTool.KeystoreSpec(
                                     alias, storePass, keyPass,
                                     signToolGenKeyAlg, signToolGenKeySize,
                                     signToolGenValidity.toIntOrNull() ?: 36500,
                                     cn, signToolGenOu.trim(), signToolGenO.trim(),
-                                    signToolGenL.trim(), signToolGenSt.trim(), signToolGenC.trim().ifEmpty { "CN" }
+                                    signToolGenL.trim(), signToolGenSt.trim(), signToolGenC.trim().ifEmpty { "CN" },
+                                    nb, na
                                 )
                                 scope.launch {
                                     val gk = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -2013,6 +2048,7 @@ fun MainScreen() {
                                             .apply()
                                         signToolStorePass = storePass
                                     }
+                                }
                                 }
                             },
                             modifier = Modifier.fillMaxWidth().height(40.dp),
@@ -2618,6 +2654,17 @@ private fun InfoRow(label: String, value: String) {
             fontSize = 11.sp,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+/** 解析 yyyy-MM-dd 为毫秒（本地时区当天 00:00），失败返回 null */
+private fun parseDateMillis(s: String): Long? {
+    return try {
+        val df = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        df.isLenient = false
+        df.parse(s)?.time
+    } catch (e: Exception) {
+        null
     }
 }
 
