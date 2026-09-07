@@ -94,4 +94,37 @@ object ApkMethodScanner {
             entries.filter { it.display.lowercase().contains(lower) }
         }
     }
+
+    /** 单条规则是否命中某方法。语义与 FrostProtectRules 一致。 */
+    fun ruleMatches(rule: String, className: String, methodName: String): Boolean {
+        val r = rule.trim()
+        if (r.isEmpty()) return false
+        if (r.startsWith("regex:")) {
+            val patternText = r.substring("regex:".length).trim()
+            if (patternText.isEmpty()) return false
+            return try { Regex(patternText, RegexOption.IGNORE_CASE).matches("$className.$methodName") } catch (e: Exception) { false }
+        }
+        val semiIndex = r.indexOf(';')
+        if (semiIndex < 0) {
+            // 纯方法名关键词/正则规则，如 .*vip.*
+            return try { Regex(r).matches(methodName) } catch (e: Exception) { false }
+        }
+        val ruleClass = r.substring(0, semiIndex + 1)
+        val classMatched = if (ruleClass.endsWith(";")) ruleClass == className
+        else {
+            try { Regex(ruleClass, RegexOption.IGNORE_CASE).matches(className) } catch (e: Exception) { false }
+        }
+        if (!classMatched) return false
+        val ruleMember = r.substring(semiIndex + 1).removePrefix(".")
+        if (ruleMember.isEmpty()) return false
+        if (ruleMember == "*" || ruleMember == methodName) return true
+        return try { Regex(ruleMember).matches(methodName) } catch (e: Exception) { false }
+    }
+
+    /** 统计规则集命中条目数；规则为空表示全量抽取。 */
+    fun countHits(entries: List<MethodEntry>, rulesText: String): Int {
+        val rules = rulesText.lineSequence().filter { it.isNotBlank() }.toList()
+        if (rules.isEmpty()) return entries.size
+        return entries.count { e -> rules.any { ruleMatches(it, e.className, e.methodName) } }
+    }
 }
