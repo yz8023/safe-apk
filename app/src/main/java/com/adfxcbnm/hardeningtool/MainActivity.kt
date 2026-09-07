@@ -188,6 +188,8 @@ fun MainScreen() {
     var signToolLoading by remember { mutableStateOf(false) }
     var signToolError by remember { mutableStateOf("") }
     var signToolTab by remember { mutableStateOf(0) }
+    var signToolConvertMsg by remember { mutableStateOf("") }
+    var signToolConvertOk by remember { mutableStateOf(false) }
     var signToolGenAlias by remember { mutableStateOf("") }
     var signToolGenStorePass by remember { mutableStateOf("") }
     var signToolGenKeyPass by remember { mutableStateOf("") }
@@ -1702,6 +1704,11 @@ fun MainScreen() {
                             onClick = { signToolTab = 1 },
                             label = { Text("生成 keystore", fontSize = 12.sp) }
                         )
+                        FilterChip(
+                            selected = signToolTab == 2,
+                            onClick = { signToolTab = 2 },
+                            label = { Text("格式转换", fontSize = 12.sp) }
+                        )
                     }
 
                     if (signToolTab == 0) {
@@ -1808,7 +1815,7 @@ fun MainScreen() {
                                 }
                             }
                         }
-                    } else {
+                    } else if (signToolTab == 1) {
                         // ===== 生成 keystore =====
                         Text(
                             "自定义证书内容生成 keystore（PKCS12），或一键生成 RSA 4096 + 100 年有效期的超强签名。",
@@ -2039,6 +2046,114 @@ fun MainScreen() {
                                     )
                                 }
                             }
+                        }
+                    } else if (signToolTab == 2) {
+                        // ===== 格式转换 =====
+                        Text(
+                            "将任意 keystore/jks/p12/pk8 转换为其他格式并可用作签名密钥。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedButton(
+                            onClick = { signToolPickerLauncher.launch(arrayOf("*/*")) },
+                            modifier = Modifier.fillMaxWidth().height(38.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (signToolKeystorePath.isNotEmpty())
+                                    File(signToolKeystorePath).name
+                                else
+                                    "选择 jks / p12 / pk8 / pem 源文件",
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        OutlinedTextField(
+                            value = signToolStorePass,
+                            onValueChange = { signToolStorePass = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("密码 (store/key, 可留空)") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                        OutlinedTextField(
+                            value = signToolAlias,
+                            onValueChange = { signToolAlias = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("别名 (alias, 可选)") },
+                            singleLine = true
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    signToolConvertMsg = ""
+                                    val path = signToolKeystorePath
+                                    val pass = signToolStorePass
+                                    val alias = signToolAlias
+                                    scope.launch {
+                                        val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            runCatching {
+                                                val sf = File(path)
+                                                val p12Out = File(sf.parentFile ?: context.filesDir, sf.name.substringBeforeLast('.') + ".p12")
+                                                val ok = SigningTool.convertToP12(
+                                                    sf, pass, alias.ifBlank { null }, p12Out, pass, pass
+                                                ) { e -> signToolConvertMsg = e }
+                                                if (ok) "转换为 P12: ${p12Out.absolutePath}" else ""
+                                            }.getOrElse { e -> "失败: ${e.message}" }
+                                        }
+                                        signToolConvertOk = out.startsWith("转换为 P12")
+                                        if (signToolConvertOk && out.isNotEmpty()) {
+                                            signKeystorePath = out.removePrefix("转换为 P12: ")
+                                            signStorePass = pass
+                                            prefs.edit()
+                                                .putString("sign_keystore_path", signKeystorePath)
+                                                .putString("sign_store_pass", pass)
+                                                .apply()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(40.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("转 P12 并设为签名密钥", fontSize = 12.sp)
+                            }
+                            Button(
+                                onClick = {
+                                    signToolConvertMsg = ""
+                                    val path = signToolKeystorePath
+                                    val pass = signToolStorePass
+                                    val alias = signToolAlias
+                                    scope.launch {
+                                        val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            runCatching {
+                                                val sf = File(path)
+                                                val base = sf.name.substringBeforeLast('.').ifEmpty { sf.name }
+                                                val pk8Out = File(sf.parentFile ?: context.filesDir, "$base.pk8")
+                                                val pemOut = File(sf.parentFile ?: context.filesDir, "$base.x509.pem")
+                                                val ok = SigningTool.exportPk8Pem(
+                                                    sf, pass, alias.ifBlank { null }, pk8Out, pemOut
+                                                ) { e -> signToolConvertMsg = e }
+                                                if (ok) "导出 PK8/PEM:\n${pk8Out.absolutePath}\n${pemOut.absolutePath}" else ""
+                                            }.getOrElse { e -> "失败: ${e.message}" }
+                                        }
+                                        signToolConvertOk = out.startsWith("导出 PK8")
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(40.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("导出 PK8/PEM", fontSize = 12.sp)
+                            }
+                        }
+                        if (signToolConvertMsg.isNotEmpty()) {
+                            Text(
+                                signToolConvertMsg,
+                                color = if (signToolConvertOk) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                fontSize = 12.sp
+                            )
                         }
                     }
                 }
@@ -3692,6 +3807,32 @@ private fun loadSigningKeyPair(
     keyPass: CharArray
 ): Pair<PrivateKey, X509Certificate>? {
     val name = keystoreFile.name.lowercase()
+
+    // pk8 / pem 形式（AOSP 平台签名）：.pk8 私钥 + 同名 .pem 证书
+    if (name.endsWith(".pk8") || name.endsWith(".key") || name.endsWith(".pem")) {
+        val pemFile = if (name.endsWith(".pk8") || name.endsWith(".key")) {
+            val base = name.removeSuffix(name.substringAfterLast('.')).trimEnd('.')
+            File(keystoreFile.parentFile, "$base.x509.pem")
+        } else keystoreFile
+        val pk8File = if (name.endsWith(".pem")) {
+            val base = name.removeSuffix(name.substringAfterLast('.')).trimEnd('.')
+            File(keystoreFile.parentFile, "$base.pk8").takeIf { it.exists() }
+                ?: File(keystoreFile.parentFile, "$base.key").takeIf { it.exists() }
+                ?: return null
+        } else keystoreFile
+        if (!pemFile.exists()) return null
+        val sigKey = SigningTool.loadKeysFromPk8Pem(
+            pk8File, pemFile, if (keyPass.isNotEmpty()) String(keyPass) else null
+        ) ?: return null
+        return Pair(sigKey.privateKey, sigKey.certificate)
+    }
+
+    // JKS：优先纯解析（Android 无 JKS provider），失败再走 KeyStore 全类型尝试
+    if (name.endsWith(".jks") || name.endsWith(".keystore") || name.endsWith(".ks")) {
+        val sigKey = SigningTool.loadKeysFromJks(keystoreFile, String(storePass), aliasHint)
+        if (sigKey != null) return Pair(sigKey.privateKey, sigKey.certificate)
+    }
+
     val extType = when {
         name.endsWith(".jks") || name.endsWith(".keystore") || name.endsWith(".ks") -> "JKS"
         name.endsWith(".bks") -> "BKS"
