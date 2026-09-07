@@ -7,7 +7,9 @@ import java.math.BigInteger
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.KeyFactory
 import java.security.MessageDigest
+import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.Signature
@@ -51,6 +53,13 @@ object SigningTool {
         aliasHint: String? = null
     ): KeystoreInfo? {
         if (!keystoreFile.exists() || keystoreFile.length() <= 0) return null
+
+        // pk8/pem：直接读同名 x509.pem 证书信息
+        val name = keystoreFile.name.lowercase()
+        if (name.endsWith(".pk8") || name.endsWith(".key") || name.endsWith(".pem")) {
+            return loadPk8PemInfo(keystoreFile)
+        }
+
         val storePassArr = storePass.toCharArray()
         val types = detectTypes(keystoreFile)
         for (type in types) {
@@ -92,7 +101,97 @@ object SigningTool {
                 // try next type
             }
         }
-        return null
+        // 回退：JKS provider 可能不存在（Android），用纯解析
+        return try {
+            loadJksInfoManually(keystoreFile, storePass, aliasHint)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** pk8/pem 证书信息查看 */
+    private fun loadPk8PemInfo(keystoreFile: File): KeystoreInfo? {
+        val name = keystoreFile.name.lowercase()
+        val pemFile = if (name.endsWith(".pem")) keystoreFile else {
+            val base = keystoreFile.name.removeSuffix(name.substringAfterLast('.')).trimEnd('.')
+            File(keystoreFile.parentFile, "$base.x509.pem").takeIf { it.exists() }
+                ?: File(keystoreFile.parentFile, "$base.pem").takeIf { it.exists() }
+                ?: return null
+        }
+        return try {
+            val cert = parsePemCertificate(pemFile.readBytes()) ?: return null
+            val publicKey = cert.publicKey
+            val keySize = when (publicKey) {
+                is RSAPublicKey -> publicKey.modulus.bitLength().toString()
+                is ECPublicKey -> publicKey.params.curve.field.fieldSize.toString()
+                else -> ""
+            }
+            val encoded = cert.encoded
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            KeystoreInfo(
+                file = keystoreFile.name,
+                type = "PK8/PEM",
+                alias = cert.subjectX500Principal.toString(),
+                subject = cert.subjectX500Principal.toString(),
+                issuer = cert.issuerX500Principal.toString(),
+                serial = cert.serialNumber.toString(16).uppercase(),
+                notBefore = dateFormat.format(cert.notBefore),
+                notAfter = dateFormat.format(cert.notAfter),
+                signatureAlg = cert.sigAlgName,
+                keyAlg = publicKey.algorithm,
+                keySize = keySize,
+                sha1 = fingerprint(encoded, "SHA-1"),
+                sha256 = fingerprint(encoded, "SHA-256"),
+                md5 = fingerprint(encoded, "MD5"),
+                aliases = emptyList()
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 纯解析 JKS 获取信息（Android 无 JKS provider 时使用） */
+    private fun loadJksInfoManually(keystoreFile: File, storePass: String, aliasHint: String?): KeystoreInfo? {
+        val data = keystoreFile.readBytes()
+        if (data.size < 12 || data[0] != 0xFE.toByte() || data[1] != 0xED.toByte()) return null // 非 JKS
+        return try {
+            val m = JksParser(data)
+            val keys = m.parseAllKeys(storePass.toCharArray())
+            val target = aliasHint?.takeIf { it.isNotBlank() }
+                ?.let { hint -> keys.firstOrNull { it.alias == hint } }
+                ?: keys.firstOrNull()
+            ?: return null
+            val cert = target.certificate
+            val pk = target.privateKey
+            val pub = cert.publicKey
+            val keyAlg = pub.algorithm
+            val keySize = when (pub) {
+                is RSAPublicKey -> pub.modulus.bitLength().toString()
+                is ECPublicKey -> pub.params.curve.field.fieldSize.toString()
+                else -> ""
+            }
+            val encoded = cert.encoded
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            KeystoreInfo(
+                file = keystoreFile.name,
+                type = "JKS",
+                alias = target.alias,
+                subject = cert.subjectX500Principal.toString(),
+                issuer = cert.issuerX500Principal.toString(),
+                serial = cert.serialNumber.toString(16).uppercase(),
+                notBefore = dateFormat.format(cert.notBefore),
+                notAfter = dateFormat.format(cert.notAfter),
+                signatureAlg = cert.sigAlgName,
+                keyAlg = keyAlg,
+                keySize = keySize,
+                sha1 = fingerprint(encoded, "SHA-1"),
+                sha256 = fingerprint(encoded, "SHA-256"),
+                md5 = fingerprint(encoded, "MD5"),
+                aliases = keys.map { it.alias }
+            )
+        } catch (e: Exception) {
+            null
+        }
     }
 
     data class GeneratedKeystore(
@@ -419,5 +518,610 @@ object SigningTool {
         return MessageDigest.getInstance(algo).digest(encoded)
             .joinToString("") { "%02x".format(it) }
             .uppercase()
+    }
+
+    // ===== JKS 纯解析（Android 无 JKS provider，需自行实现）=====
+
+    data class SignatureKey(
+        val alias: String,
+        val privateKey: PrivateKey,
+        val certificate: X509Certificate
+    )
+
+    /**
+     * 纯 Kotlin 解析 JKS v2 文件（Android 无 SunJCE JKS provider，必须自实现）。
+     * 返回所有 PrivateKeyEntry 的可签名密钥对。
+     */
+    fun loadKeysFromJks(keystoreFile: File, storePass: String, aliasHint: String? = null): SignatureKey? {
+        val data = keystoreFile.readBytes()
+        if (data.size < 12) return null
+        if (data[0] != 0xFE.toByte() || data[1] != 0xED.toByte()) return null // FEEDFEED 魔数
+        return try {
+            val m = JksParser(data)
+            val pass = storePass.toCharArray()
+            val keys = m.parseAllKeys(pass)
+            val target = aliasHint?.takeIf { it.isNotBlank() }
+                ?.let { hint -> keys.firstOrNull { it.alias == hint } }
+                ?: keys.firstOrNull()
+            target
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 从 PKCS8 私钥文件（.pk8/.key DER 或 PEM）+ X509 证书文件（.pem/.crt）加载签名密钥对。
+     * 私有密钥支持未加密 PKCS8 与加密 PKCS8（EncryptedPrivateKeyInfo，PBES2/PBE）。
+     */
+    fun loadKeysFromPk8Pem(
+        pk8File: File,
+        pemFile: File,
+        keyPass: String? = null
+    ): SignatureKey? {
+        return try {
+            val pemCert = parsePemCertificate(pemFile.readBytes())
+            val raw = pk8File.readBytes()
+            val privateKey = parsePk8(raw, keyPass) ?: return null
+            SignatureKey("pk8pem", privateKey, pemCert)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 解析 X509 PEM/DER 证书 */
+    fun parsePemCertificate(data: ByteArray): X509Certificate {
+        val der = pemToDer(data)
+        val cf = java.security.cert.CertificateFactory.getInstance("X.509")
+        return cf.generateCertificate(java.io.ByteArrayInputStream(der)) as X509Certificate
+    }
+
+    /**
+     * 解析 PKCS8 私钥（DER 或 PEM）。支持：
+     * - 未加密 PrivateKeyInfo
+     * - EncryptedPrivateKeyInfo（需密码）
+     */
+    fun parsePk8(data: ByteArray, keyPass: String?): PrivateKey? {
+        var raw = pemToDer(data)
+        // 检测是否 EncryptedPrivateKeyInfo（外层 SEQUENCE 内为 AlgorithmIdentifier + OCTET STRING）
+        if (isEncryptedPkcs8(raw)) {
+            if (keyPass.isNullOrEmpty()) return null
+            raw = decryptPkcs8(raw, keyPass) ?: return null
+        }
+        return try {
+            val spec = java.security.spec.PKCS8EncodedKeySpec(raw)
+            val alg = detectKeyAlgorithmFromPkcs8(raw)
+            val kf = KeyFactory.getInstance(alg)
+            kf.generatePrivate(spec)
+        } catch (e: Exception) {
+            // 兜底：尝试 RSA / EC
+            try {
+                val kf = KeyFactory.getInstance("RSA")
+                kf.generatePrivate(java.security.spec.PKCS8EncodedKeySpec(raw))
+            } catch (e2: Exception) {
+                try {
+                    val kf = KeyFactory.getInstance("EC")
+                    kf.generatePrivate(java.security.spec.PKCS8EncodedKeySpec(raw))
+                } catch (e3: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    /** 解密 EncryptedPrivateKeyInfo（支持 PBES2: PBKDF2+DESede/RC2/AES，以及 PBEWithMD5And*） */
+    private fun decryptPkcs8(encryptedPkcs8: ByteArray, password: String): ByteArray? {
+        return try {
+            val epki = javax.crypto.EncryptedPrivateKeyInfo(encryptedPkcs8)
+            val algName = epki.algName
+            val spec = when {
+                algName.contains("PBES2", true) -> {
+                    val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
+                    val pbeSpec = epki.algParameters.getParameterSpec(javax.crypto.spec.PBEParameterSpec::class.java)
+                    javax.crypto.spec.PBEKeySpec(password.toCharArray(), pbeSpec.salt, pbeSpec.iterationCount)
+                        .let { pks ->
+                            val skey = factory.generateSecret(pks)
+                            javax.crypto.Cipher.getInstance(algName).let { c ->
+                                c.init(javax.crypto.Cipher.DECRYPT_MODE, skey, epki.algParameters)
+                                c.doFinal(epki.encryptedData)
+                            }
+                        }
+                }
+                else -> {
+                    val factory = javax.crypto.SecretKeyFactory.getInstance(algName)
+                    val pbeSpec = epki.algParameters?.getParameterSpec(javax.crypto.spec.PBEParameterSpec::class.java)
+                    if (pbeSpec != null) {
+                        val pks = javax.crypto.spec.PBEKeySpec(password.toCharArray(), pbeSpec.salt, pbeSpec.iterationCount)
+                        val skey = factory.generateSecret(pks)
+                        val c = javax.crypto.Cipher.getInstance(algName)
+                        c.init(javax.crypto.Cipher.DECRYPT_MODE, skey, epki.algParameters)
+                        c.doFinal(epki.encryptedData)
+                    } else {
+                        val pks = javax.crypto.spec.PBEKeySpec(password.toCharArray())
+                        val skey = factory.generateSecret(pks)
+                        val c = javax.crypto.Cipher.getInstance(algName)
+                        c.init(javax.crypto.Cipher.DECRYPT_MODE, skey)
+                        c.doFinal(epki.encryptedData)
+                    }
+                }
+            }
+            spec as ByteArray
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** PEM (-----BEGIN ...-----) 转 DER，兼容纯 DER 输入 */
+    private fun pemToDer(data: ByteArray): ByteArray {
+        val text = String(data)
+        if (!text.contains("BEGIN ")) return data
+        val base64Part = text.lines()
+            .filter { !it.startsWith("-----") }
+            .filter { it.isNotBlank() }
+            .joinToString("")
+        return try {
+            java.util.Base64.getDecoder().decode(base64Part)
+        } catch (e: Exception) {
+            // 尝试 MIME 解码（容忍换行符）
+            java.util.Base64.getMimeDecoder().decode(base64Part)
+        }
+    }
+
+    // ===== 简单 DER 读取工具（供 JKS / PKCS8 / OID 解析）=====
+
+    private class DerReader(val data: ByteArray, var pos: Int = 0) {
+        fun tag(): Int = data[pos].toInt() and 0xFF
+        fun read(): Int {
+            val t = data[pos++].toInt() and 0xFF
+            return t
+        }
+        fun readSequenceLen(): Int {
+            // 当前位置是 SEQUENCE tag，返回序列内容结束位置
+            read() // tag
+            return readValueEnd()
+        }
+        fun readValueEnd(): Int {
+            val first = read()
+            if (first < 0x80) return pos + first
+            val n = first and 0x7F
+            var len = 0
+            for (i in 0 until n) len = (len shl 8) or read()
+            return pos + len
+        }
+        fun readBytes(n: Int): ByteArray {
+            val out = data.copyOfRange(pos, pos + n)
+            pos += n
+            return out
+        }
+    }
+
+    /** 读取 DER 长度字段（b[pos] 为长度首字节），返回长度值 */
+    private fun derLength(b: ByteArray, pos: Int): Int {
+        val first = b[pos].toInt() and 0xFF
+        if (first < 0x80) return first
+        val n = first and 0x7F
+        var len = 0
+        for (i in 0 until n) len = (len shl 8) or (b[pos + 1 + i].toInt() and 0xFF)
+        return len
+    }
+
+    /** DER 长度字段占用字节数（含长度首字节） */
+    private fun derLengthBytes(b: ByteArray, pos: Int): Int {
+        val first = b[pos].toInt() and 0xFF
+        return if (first < 0x80) 1 else 1 + (first and 0x7F)
+    }
+
+    /** 跳到 value 起始（跳过 tag + length 字段） */
+    private fun derValueStart(b: ByteArray, tagPos: Int): Int {
+        return tagPos + 1 + derLengthBytes(b, tagPos + 1)
+    }
+
+    /** 返回 TLV 的 value 结束位置（下一个元素的 tag 位置） */
+    private fun derValueEnd(b: ByteArray, tagPos: Int): Int {
+        return derValueStart(b, tagPos) + derLength(b, tagPos + 1)
+    }
+
+    /** 解析 OID（oidTagPos 指向 0x06 tag 位置） */
+    private fun derOid(b: ByteArray, oidTagPos: Int): String? {
+        if (b[oidTagPos] != 0x06.toByte()) return null
+        val contentStart = derValueStart(b, oidTagPos)
+        val len = derLength(b, oidTagPos + 1)
+        val bytes = b.copyOfRange(contentStart, contentStart + len)
+        return decodeOidBytes(bytes)
+    }
+
+    private fun decodeOidBytes(bytes: ByteArray): String {
+        if (bytes.isEmpty()) return ""
+        val parts = mutableListOf<Long>()
+        val b0 = bytes[0].toLong() and 0x7F
+        val arc0: Long
+        val arc1: Long
+        if (b0 >= 80) {
+            // 首组多字节（极罕见），按 2.x 处理
+            var v = 0L
+            var byteIdx = 0
+            while (byteIdx < bytes.size) {
+                val b = bytes[byteIdx].toLong() and 0xFF
+                v = (v shl 7) or (b and 0x7F)
+                byteIdx++
+                if (b and 0x80 == 0.toLong()) break
+            }
+            arc0 = 2
+            arc1 = v - 80
+        } else {
+            arc0 = b0 / 40
+            arc1 = b0 % 40
+        }
+        parts.add(arc0)
+        parts.add(arc1)
+        var value = 0L
+        for (i in 1 until bytes.size) {
+            val b = bytes[i].toLong() and 0xFF
+            value = (value shl 7) or (b and 0x7F)
+            if (b and 0x80 == 0.toLong()) {
+                parts.add(value)
+                value = 0
+            }
+        }
+        return parts.joinToString(".")
+    }
+
+    /** 读取 PKCS8 内层算法 OID：跳过 version(INTEGER,可选) 后找第一个 SEQUENCE 的 OID */
+    private fun readPkcs8AlgOid(raw: ByteArray): String? {
+        return try {
+            var p = derValueStart(raw, 0)
+            val outerEnd = derValueEnd(raw, 0)
+            // 跳过 INTEGER version（可选）
+            while (p < outerEnd) {
+                val tag = raw[p].toInt() and 0xFF
+                if (tag == 0x30) {
+                    val seqContent = derValueStart(raw, p)
+                    return derOid(raw, seqContent)
+                }
+                p = derValueEnd(raw, p)
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun isEncryptedPkcs8(raw: ByteArray): Boolean {
+        if (raw.size < 4 || raw[0] != 0x30.toByte()) return false
+        return try {
+            val oid = readPkcs8AlgOid(raw)
+            oid != null && oid != "1.2.840.113549.1.1.1" && oid != "1.2.840.10045.2.1"
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun detectKeyAlgorithmFromPkcs8(raw: ByteArray): String {
+        val oid = readPkcs8AlgOid(raw)
+        return if (oid == "1.2.840.10045.2.1") "EC" else "RSA"
+    }
+
+    // ===== JKS 格式解析器 =====
+
+    private class JksParser(val data: ByteArray) {
+        private var p = 0
+
+        fun parseAllKeys(pass: CharArray): List<SignatureKey> {
+            val magic = readInt()
+            val version = readInt()
+            if (magic != 0xFEEDFEED.toInt()) throw IllegalArgumentException("bad magic")
+            val count = readInt()
+            val result = mutableListOf<SignatureKey>()
+            for (i in 0 until count) {
+                val tag = readInt()
+                val alias = readUTF()
+                readLong() // timestamp
+                if (tag == 1) { // PrivateKeyEntry
+                    val keyLen = readInt()
+                    val protectedKey = readBytes(keyLen)
+                    val numCerts = readInt()
+                    val certs = mutableListOf<X509Certificate>()
+                    if (version == 2) {
+                        for (j in 0 until numCerts) {
+                            val certType = readUTF()
+                            val certLen = readInt()
+                            val certDer = readBytes(certLen)
+                            try {
+                                val cf = java.security.cert.CertificateFactory.getInstance(certType)
+                                certs.add(cf.generateCertificate(java.io.ByteArrayInputStream(certDer)) as X509Certificate)
+                            } catch (e: Exception) { /* skip bad cert */ }
+                        }
+                    } else {
+                        // v1: 无 certType，直接 certificate
+                        for (j in 0 until numCerts) {
+                            val certLen = readInt()
+                            val certDer = readBytes(certLen)
+                            try {
+                                val cf = java.security.cert.CertificateFactory.getInstance("X.509")
+                                certs.add(cf.generateCertificate(java.io.ByteArrayInputStream(certDer)) as X509Certificate)
+                            } catch (e: Exception) { /* skip */ }
+                        }
+                    }
+                    if (certs.isNotEmpty()) {
+                        val pkcs8 = recoverJksKey(protectedKey, pass)
+                        if (pkcs8 != null) {
+                            val alg = if (detectKeyAlgorithmFromPkcs8(pkcs8) == "EC") "EC" else "RSA"
+                            try {
+                                val key = KeyFactory.getInstance(alg)
+                                    .generatePrivate(java.security.spec.PKCS8EncodedKeySpec(pkcs8))
+                                result.add(SignatureKey(alias, key, certs[0]))
+                            } catch (e: Exception) {
+                                try {
+                                    val key = KeyFactory.getInstance("RSA")
+                                        .generatePrivate(java.security.spec.PKCS8EncodedKeySpec(pkcs8))
+                                    result.add(SignatureKey(alias, key, certs[0]))
+                                } catch (e2: Exception) { /* skip */ }
+                            }
+                        }
+                    }
+                } else if (tag == 2) { // TrustedCertEntry
+                    if (version == 2) {
+                        val certType = readUTF()
+                        val certLen = readInt()
+                        readBytes(certLen)
+                    } else {
+                        val certLen = readInt()
+                        readBytes(certLen)
+                    }
+                }
+            }
+            return result
+        }
+
+        private fun readInt(): Int {
+            var v = 0
+            for (i in 0 until 4) v = (v shl 8) or (readByte().toInt() and 0xFF)
+            return v
+        }
+
+        private fun readLong(): Long {
+            var v = 0L
+            for (i in 0 until 8) v = (v shl 8) or (readByte().toLong() and 0xFF)
+            return v
+        }
+
+        private fun readUTF(): String {
+            val len = (readByte().toInt() and 0xFF shl 8) or (readByte().toInt() and 0xFF)
+            val bytes = readBytes(len)
+            return decodeModifiedUtf8(bytes)
+        }
+
+        private fun readByte(): Byte = data[p++]
+
+        private fun readBytes(n: Int): ByteArray {
+            val out = data.copyOfRange(p, p + n)
+            p += n
+            return out
+        }
+
+        private fun decodeModifiedUtf8(bytes: ByteArray): String {
+            // DataOutputStream.writeUTF 的 modified UTF-8 → UTF-16
+            val sb = StringBuilder()
+            var i = 0
+            while (i < bytes.size) {
+                val b = bytes[i].toInt() and 0xFF
+                if (b and 0x80 == 0) {
+                    sb.append(b.toChar())
+                    i++
+                } else if (b and 0xE0 == 0xC0) {
+                    val b2 = bytes[i + 1].toInt() and 0xFF
+                    sb.append(((b and 0x1F) shl 6 or (b2 and 0x3F)).toChar())
+                    i += 2
+                } else {
+                    // 3 字节（含 surrogate 对）
+                    val b2 = bytes[i + 1].toInt() and 0xFF
+                    val b3 = bytes[i + 2].toInt() and 0xFF
+                    sb.append(((b and 0x0F) shl 12 or ((b2 and 0x3F) shl 6) or (b3 and 0x3F)).toChar())
+                    i += 3
+                }
+            }
+            return sb.toString()
+        }
+    }
+
+    /**
+     * 复刻 sun.security.provider.KeyProtector.recover：
+     * JKS 私钥保护 = SHA1(password-utf16be || salt) 迭代 XOR 明文，末尾 SHA1(password||plain) 校验。
+     * protectedKey 为 EncryptedPrivateKeyInfo 编码（OID JAVASOFT_JDKKeyProtector）。
+     */
+    private fun recoverJksKey(protectedKey: ByteArray, password: CharArray): ByteArray? {
+        return try {
+            val epki = javax.crypto.EncryptedPrivateKeyInfo(protectedKey)
+            val enc = epki.encryptedData
+            // 密码 UTF-16BE（JavaKeyStore.convertPassword）
+            val pw = java.io.ByteArrayOutputStream()
+            for (ch in password) {
+                pw.write((ch.toInt() shr 8 and 0xFF))
+                pw.write(ch.toInt() and 0xFF)
+            }
+            val pwBytes = pw.toByteArray()
+
+            val salt = enc.copyOfRange(0, SALT_LEN)
+            val encrKeyLen = enc.size - SALT_LEN - DIGEST_LEN
+            if (encrKeyLen <= 0) return null
+            val numRounds = (encrKeyLen + DIGEST_LEN - 1) / DIGEST_LEN
+
+            val md = MessageDigest.getInstance("SHA1")
+            var digest = salt
+            val xorKey = ByteArray(encrKeyLen)
+            var xo = 0
+            for (i in 0 until numRounds) {
+                md.update(pwBytes)
+                md.update(digest)
+                digest = md.digest()
+                md.reset()
+                val n = minOf(DIGEST_LEN, encrKeyLen - xo)
+                System.arraycopy(digest, 0, xorKey, xo, n)
+                xo += n
+            }
+
+            val plain = ByteArray(encrKeyLen)
+            for (i in 0 until encrKeyLen) {
+                (enc[i + SALT_LEN].toInt() xor xorKey[i].toInt()).also { plain[i] = it.toByte() }
+            }
+
+            md.update(pwBytes)
+            md.update(plain)
+            val check = md.digest()
+            for (i in 0 until DIGEST_LEN) {
+                if (check[i] != enc[SALT_LEN + encrKeyLen + i]) {
+                    return null // 密码错误或指纹不符
+                }
+            }
+            plain
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private const val DIGEST_LEN = 20
+    private const val SALT_LEN = 20
+
+    // ===== 格式转换 =====
+
+    /** 从 keystore 导出 pk8（DER PKCS8）与 pem（X509 证书） */
+    fun exportPk8Pem(
+        keystoreFile: File,
+        storePass: String,
+        aliasHint: String?,
+        pk8Out: File,
+        pemOut: File,
+        onError: (String) -> Unit
+    ): Boolean {
+        return try {
+            val key = loadSignatureKey(keystoreFile, storePass, aliasHint)
+                ?: run {
+                    onError("无法从 keystore 读取密钥（检查密码/别名）")
+                    return false
+                }
+            pk8Out.writeBytes(key.privateKey.encoded)
+            pemOut.writeText(pemEncode(key.certificate.encoded, "CERTIFICATE"))
+            true
+        } catch (e: Exception) {
+            onError(e.message ?: e.javaClass.simpleName)
+            false
+        }
+    }
+
+    /**
+     * 从任意来源（jks/jksjk 纯解析 / p12 / pk8pem）生成 PKCS12 keystore（转换格式用）。
+     * 便于把用户的原 JKS 转为 Android 原生可读的 p12。
+     */
+    fun convertToP12(
+        keystoreFile: File,
+        storePass: String,
+        aliasHint: String?,
+        p12Out: File,
+        newStorePass: String = "",
+        newKeyPass: String = "",
+        onError: (String) -> Unit
+    ): Boolean {
+        return try {
+            val key = loadSignatureKey(keystoreFile, storePass, aliasHint)
+                ?: run {
+                    onError("无法读取密钥（检查密码/别名）")
+                    return false
+                }
+            val storePw = newStorePass.ifBlank { storePass }
+            val keyPw = newKeyPass.ifBlank { storePass }
+            val ks = KeyStore.getInstance("PKCS12")
+            ks.load(null, null)
+            ks.setKeyEntry(
+                key.alias.ifBlank { "adh" },
+                key.privateKey,
+                keyPw.toCharArray(),
+                arrayOf(key.certificate)
+            )
+            p12Out.parentFile?.mkdirs()
+            java.io.FileOutputStream(p12Out).use { ks.store(it, storePw.toCharArray()) }
+            if (!p12Out.exists() || p12Out.length() <= 0) {
+                onError("转换生成的 p12 文件无效")
+                return false
+            }
+            true
+        } catch (e: Exception) {
+            onError(e.message ?: e.javaClass.simpleName)
+            false
+        }
+    }
+
+    /** 将 pk8/key/pem 文件解析为 (pk8File, pemFile) 配对 */
+    private fun resolvePk8PemFiles(file: File): Pair<File, File>? {
+        val name = file.name.lowercase()
+        return when {
+            name.endsWith(".pk8") || name.endsWith(".key") -> {
+                val base = file.name.removeSuffix(name.substringAfterLast('.')).trimEnd('.')
+                val pemFile = File(file.parentFile, "$base.x509.pem").takeIf { it.exists() }
+                    ?: File(file.parentFile, "$base.pem").takeIf { it.exists() }
+                    ?: return null
+                Pair(file, pemFile)
+            }
+            else -> {
+                val base = file.name.removeSuffix(name.substringAfterLast('.')).trimEnd('.')
+                val pk8File = File(file.parentFile, "$base.pk8").takeIf { it.exists() }
+                    ?: File(file.parentFile, "$base.key").takeIf { it.exists() }
+                    ?: return null
+                Pair(pk8File, file)
+            }
+        }
+    }
+
+    /** 通用加载签名密钥：自动识别 jks / p12 / bks / pk8pem */
+    fun loadSignatureKey(keystoreFile: File, storePass: String, aliasHint: String?): SignatureKey? {
+        val name = keystoreFile.name.lowercase()
+        return when {
+            name.endsWith(".pk8") || name.endsWith(".pem") || name.endsWith(".key") -> {
+                val pair = resolvePk8PemFiles(keystoreFile) ?: return null
+                loadKeysFromPk8Pem(pair.first, pair.second, storePass)
+            }
+            name.endsWith(".p12") || name.endsWith(".pfx") -> {
+                try {
+                    val ks = KeyStore.getInstance("PKCS12")
+                    java.io.FileInputStream(keystoreFile).use { ks.load(it, storePass.toCharArray()) }
+                    val alias = aliasHint?.takeIf { it.isNotBlank() && ks.containsAlias(it) }
+                        ?: ks.aliases().toList().firstOrNull { ks.isKeyEntry(it) }
+                        ?: return null
+                    val key = ks.getKey(alias, storePass.toCharArray()) as? PrivateKey ?: return null
+                    val cert = ks.getCertificate(alias) as? X509Certificate ?: return null
+                    SignatureKey(alias, key, cert)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            name.endsWith(".jks") || name.endsWith(".keystore") || name.endsWith(".ks") || name.endsWith(".bks") -> {
+                loadKeysFromJks(keystoreFile, storePass, aliasHint)
+            }
+            else -> {
+                // 自动探测
+                loadKeysFromJks(keystoreFile, storePass, aliasHint)
+                    ?: try {
+                        val ks = KeyStore.getInstance("PKCS12")
+                        java.io.FileInputStream(keystoreFile).use { ks.load(it, storePass.toCharArray()) }
+                        val alias = aliasHint?.takeIf { it.isNotBlank() && ks.containsAlias(it) }
+                            ?: ks.aliases().toList().firstOrNull { ks.isKeyEntry(it) }
+                            ?: return null
+                        val key = ks.getKey(alias, storePass.toCharArray()) as? PrivateKey ?: return null
+                        val cert = ks.getCertificate(alias) as? X509Certificate ?: return null
+                        SignatureKey(alias, key, cert)
+                    } catch (e: Exception) {
+                        null
+                    }
+            }
+        }
+    }
+
+    /** PEM 编码辅助 */
+    fun pemEncode(der: ByteArray, type: String): String {
+        val b64 = java.util.Base64.getEncoder().encodeToString(der)
+        val sb = StringBuilder("-----BEGIN $type-----\n")
+        for (i in b64.indices step 64) {
+            sb.append(b64.substring(i, minOf(i + 64, b64.length))).append('\n')
+        }
+        sb.append("-----END $type-----\n")
+        return sb.toString()
     }
 }
