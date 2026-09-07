@@ -201,8 +201,8 @@ fun MainScreen() {
     var signToolGenKeyAlg by remember { mutableStateOf("RSA") }
     var signToolGenKeySize by remember { mutableStateOf(2048) }
     var signToolGenValidity by remember { mutableStateOf("36500") }
-    var signToolGenNotBefore by remember { mutableStateOf("") }
-    var signToolGenNotAfter by remember { mutableStateOf("") }
+    var signToolGenNotBefore by remember { mutableStateOf(formatDateOffsetDays(-1)) }
+    var signToolGenNotAfter by remember { mutableStateOf(formatDateOffsetDays(36500 - 1)) }
     var signToolGenCn by remember { mutableStateOf("") }
     var signToolGenOu by remember { mutableStateOf("") }
     var signToolGenO by remember { mutableStateOf("") }
@@ -2016,12 +2016,12 @@ fun MainScreen() {
                                 onValueChange = { signToolGenNotAfter = it },
                                 modifier = Modifier.weight(1f),
                                 label = { Text("到期日期 yyyy-MM-dd") },
-                                placeholder = { Text("留空=100年") },
+                                placeholder = { Text("留空=有效期天数") },
                                 singleLine = true
                             )
                         }
                         Text(
-                            "直接填写起止日期；留空时回退为快捷有效期：",
+                            "已自动生成标准日期；可手动覆盖：",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2035,8 +2035,8 @@ fun MainScreen() {
                                     selected = signToolGenValidity == days.toString(),
                                     onClick = {
                                         signToolGenValidity = days.toString()
-                                        signToolGenNotBefore = ""
-                                        signToolGenNotAfter = ""
+                                        signToolGenNotBefore = formatDateOffsetDays(-1L)
+                                        signToolGenNotAfter = formatDateOffsetDays((days - 1).toLong())
                                     },
                                     label = { Text("${days / 365}年", fontSize = 12.sp) }
                                 )
@@ -2832,6 +2832,13 @@ private fun parseDateMillis(s: String): Long? {
     } catch (e: Exception) {
         null
     }
+}
+
+/** 返回距今天 offsetDays 天的标准日期（yyyy-MM-dd），用于签名日期自动预填 */
+private fun formatDateOffsetDays(offsetDays: Long): String {
+    val cal = java.util.Calendar.getInstance()
+    cal.add(java.util.Calendar.DAY_OF_YEAR, offsetDays.toInt())
+    return java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

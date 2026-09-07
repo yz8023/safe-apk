@@ -242,10 +242,13 @@ object FrostStringEncryptor {
             val baseRegs = impl.registerCount
             val isStatic = method.accessFlags and AccessFlags.STATIC.value != 0
 
-            // 计算参数寄存器槽位（type 序：显式参数按声明顺序，实例方法的 this 在最顶）
+            // 计算参数寄存器槽位。Dalvik 中参数寄存器锚定在寄存器区最高位且按位序排列：
+            // 实例方法的 this 占据最低参数位，其后依次为显式参数（按声明顺序）。
+            // 因此 slotTypes 必须按此真实位序构造（this 在前），否则搬移指令的 dst/src
+            // 与真实参数错位，多参数方法会读错寄存器类型（ART VerifyError 闪退）。
             val slotTypes = ArrayList<String>()
-            for (p in method.parameters) slotTypes.add(p.type)
             if (!isStatic) slotTypes.add("Lthis;")
+            for (p in method.parameters) slotTypes.add(p.type)
             val slotWidths = slotTypes.map { if (it == "J" || it == "D") 2 else 1 }
             val totalSlots = slotWidths.sum()
             val low = baseRegs - totalSlots
@@ -259,9 +262,11 @@ object FrostStringEncryptor {
             val mutable = MutableMethodImplementation(impl)
 
             // 方法头部插入参数搬移：新参数区（src=baseRegs+4+pos）搬回原参数区（dst=low+pos）
-            // 每条 move 对应一个参数类型槽位，头部共插入 slotTypes.size 条指令
+            // 每条 move 对应一个参数类型槽位，头部共插入 slotTypes.size 条指令；
+            // 按位序正向计算 dst/src（pos 累加槽宽），再倒序插入以保持头部最终为位序排列。
             var pos = 0
-            for (i in slotTypes.indices.reversed()) {
+            val paramMoves = ArrayList<BuilderInstruction32x>(slotTypes.size)
+            for (i in slotTypes.indices) {
                 val w = slotWidths[i]
                 val dst = low + pos
                 val src = baseRegs + 4 + pos
@@ -271,8 +276,11 @@ object FrostStringEncryptor {
                         Opcode.MOVE_OBJECT_16
                     else -> Opcode.MOVE_16
                 }
-                mutable.addInstruction(0, BuilderInstruction32x(op, dst, src))
+                paramMoves.add(BuilderInstruction32x(op, dst, src))
                 pos += w
+            }
+            for (m in paramMoves.asReversed()) {
+                mutable.addInstruction(0, m)
             }
             val headShift = slotTypes.size
 
