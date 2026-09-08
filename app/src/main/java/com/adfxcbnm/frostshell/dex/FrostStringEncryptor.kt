@@ -238,7 +238,6 @@ object FrostStringEncryptor {
         fun rewriteMethod(method: Method): Method? {
             val impl = method.implementation ?: return null
             if (method.name == "<init>" || method.name == "<clinit>") return null
-            if (impl.tryBlocks.isNotEmpty()) return null
             val original = impl.instructions
             val targetIndexes = ArrayList<Int>()
             for ((index, instruction) in original.withIndex()) {
@@ -342,10 +341,11 @@ object FrostStringEncryptor {
 
         private fun isSensitive(value: String): Boolean {
             if (value.isEmpty()) return false
-            if (value.codePointCount(0, value.length) < minLen) return false
+            // 关键词命中时无条件加密：token/apiKey 等短敏感串不受 minLen 拦截
+            if (keywords.isNotEmpty() && keywords.any { value.contains(it, ignoreCase = true) }) return true
             if (value.all { it.isDigit() || it.isWhitespace() }) return false
-            if (keywords.isEmpty()) return value.length >= minLen + 4
-            return keywords.any { value.contains(it, ignoreCase = true) }
+            // 全量兜底：只要达到长度阈值就加密，防止中文提示语/业务文案明文落池
+            return value.codePointCount(0, value.length) >= minLen
         }
     }
 
