@@ -179,6 +179,15 @@ fun MainScreen() {
     var frostExcludedAbi by remember {
         mutableStateOf(prefs.getStringSet("frost_excluded_abi", emptySet())?.toMutableSet() ?: mutableSetOf())
     }
+    var frostDexHeaderObfuscation by remember { mutableStateOf(prefs.getBoolean("frost_dex_header_obfuscation", false)) }
+    var frostClassShuffle by remember { mutableStateOf(prefs.getBoolean("frost_class_shuffle", false)) }
+    var frostDebugRemoval by remember { mutableStateOf(prefs.getBoolean("frost_debug_removal", false)) }
+    var frostGotoInsertion by remember { mutableStateOf(prefs.getBoolean("frost_goto_insertion", false)) }
+    var frostArithmeticObfuscation by remember { mutableStateOf(prefs.getBoolean("frost_arithmetic_obfuscation", false)) }
+    var frostControlFlow by remember { mutableStateOf(prefs.getBoolean("frost_control_flow", false)) }
+    var frostCallIndirection by remember { mutableStateOf(prefs.getBoolean("frost_call_indirection", false)) }
+    var frostMethodOverload by remember { mutableStateOf(prefs.getBoolean("frost_method_overload", false)) }
+    var frostFieldRename by remember { mutableStateOf(prefs.getBoolean("frost_field_rename", false)) }
     var showOutputDirTextDialog by remember { mutableStateOf(false) }
     var outputDirTextInput by remember { mutableStateOf("") }
     var showSignInfoDialog by remember { mutableStateOf(false) }
@@ -801,6 +810,15 @@ fun MainScreen() {
                             stringEncrypt = frostStringEncrypt,
                             stringEncryptMinLen = frostStringEncryptMinLen,
                             stringEncryptKeywords = if (frostStringEncrypt) loadStringEncryptKeywords(context) else null,
+                            dexHeaderObfuscation = frostDexHeaderObfuscation,
+                            classShuffle = frostClassShuffle,
+                            debugRemoval = frostDebugRemoval,
+                            gotoInsertion = frostGotoInsertion,
+                            arithmeticObfuscation = frostArithmeticObfuscation,
+                            controlFlow = frostControlFlow,
+                            callIndirection = frostCallIndirection,
+                            methodOverload = frostMethodOverload,
+                            fieldRename = frostFieldRename,
                             signEnabled = signEnabled,
                             signKeystorePath = signKeystorePath.ifEmpty { null },
                             signAlias = signAlias.ifEmpty { null },
@@ -1565,6 +1583,99 @@ fun MainScreen() {
                             methodFilterDialogTab = 0
                             showMethodFilterDialog = true
                         }
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("代码混淆 (DEX pass，从 ArkProtector 移植)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                SettingRow(
+                    icon = Icons.Default.Shuffle,
+                    title = "类顺序打乱",
+                    subtitle = "随机重排类定义 (class-shuffle)",
+                    checked = frostClassShuffle,
+                    onCheckedChange = {
+                        frostClassShuffle = it
+                        prefs.edit().putBoolean("frost_class_shuffle", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Code,
+                    title = "DEX 头部混淆",
+                    subtitle = "填充 header 并重算 SHA-1/Adler32 (dex-header)",
+                    checked = frostDexHeaderObfuscation,
+                    onCheckedChange = {
+                        frostDexHeaderObfuscation = it
+                        prefs.edit().putBoolean("frost_dex_header_obfuscation", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Delete,
+                    title = "移除 Debug 信息",
+                    subtitle = "剥离行号/局部变量 (debug-removal)",
+                    checked = frostDebugRemoval,
+                    onCheckedChange = {
+                        frostDebugRemoval = it
+                        prefs.edit().putBoolean("frost_debug_removal", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.South,
+                    title = "Goto 插入混淆",
+                    subtitle = "方法头插入无意义 goto 跳转 (goto-insertion)",
+                    checked = frostGotoInsertion,
+                    onCheckedChange = {
+                        frostGotoInsertion = it
+                        prefs.edit().putBoolean("frost_goto_insertion", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Calculate,
+                    title = "算术混淆",
+                    subtitle = "ADD_INT 等价序列替换 + 假分支 (arithmetic)",
+                    checked = frostArithmeticObfuscation,
+                    onCheckedChange = {
+                        frostArithmeticObfuscation = it
+                        prefs.edit().putBoolean("frost_arithmetic_obfuscation", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Router,
+                    title = "控制流混淆",
+                    subtitle = "方法头部拓宽与 goto 干扰 (control-flow)",
+                    checked = frostControlFlow,
+                    onCheckedChange = {
+                        frostControlFlow = it
+                        prefs.edit().putBoolean("frost_control_flow", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Call,
+                    title = "调用间接化",
+                    subtitle = "方法入口注入间接跳转 (call-indirection)",
+                    checked = frostCallIndirection,
+                    onCheckedChange = {
+                        frostCallIndirection = it
+                        prefs.edit().putBoolean("frost_call_indirection", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.Layers,
+                    title = "方法重载混淆",
+                    subtitle = "注入同签名 dummy 方法 (method-overload)",
+                    checked = frostMethodOverload,
+                    onCheckedChange = {
+                        frostMethodOverload = it
+                        prefs.edit().putBoolean("frost_method_overload", it).apply()
+                    }
+                )
+                SettingRow(
+                    icon = Icons.Default.DriveFileRenameOutline,
+                    title = "字段重命名",
+                    subtitle = "非敏感字段随机改名，引用精确重映射 (field-rename)",
+                    checked = frostFieldRename,
+                    onCheckedChange = {
+                        frostFieldRename = it
+                        prefs.edit().putBoolean("frost_field_rename", it).apply()
                     }
                 )
                 Spacer(Modifier.height(8.dp))
