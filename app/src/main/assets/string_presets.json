@@ -6,5 +6,6 @@
   {"title": "Token/密钥", "keywords": ["token", "accessToken", "access_token", "refreshToken", "refresh_token", "apiKey", "api_key", "secret", "signKey", "sign_key"], "category": "敏感数据"},
   {"title": "接口/请求", "keywords": ["baseUrl", "base_url", "apiUrl", "api_url", "endpoint", "appId", "app_id", "channelId", "channel_id"], "category": "敏感数据"},
   {"title": "设备/网络", "keywords": ["deviceId", "device_id", "imei", "mac", "androidId", "android_id", "fingerprint", "wifiName", "wifi_name"], "category": "设备指纹"},
-  {"title": "加解密", "keywords": ["encrypt", "decrypt", "cipher", "aesKey", "aes_key", "iv", "salt", "nonce", "signature"], "category": "加解密"}
+  {"title": "加解密", "keywords": ["encrypt", "decrypt", "cipher", "aesKey", "aes_key", "iv", "salt", "nonce", "signature"], "category": "加解密"},
+  {"title": "中文业务提示", "keywords": ["请输入", "请填写", "请选择", "登录", "注册", "密码", "账号", "验证码", "邮箱", "手机号", "余额", "金额", "支付", "失败", "成功", "错误", "异常", "超时", "网络", "连接", "请求", "响应", "获取", "加载", "确认", "删除", "保存", "退出", "授权", "绑定", "解绑", "会员", "激活", "到期", "充值", "提现", "审核", "申诉", "违规", "封禁", "隐私", "协议"], "category": "中文业务"}
 ]

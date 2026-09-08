@@ -55,8 +55,8 @@ import java.util.zip.*
 
 private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
-private const val APP_VERSION = "9.7.0"
-private const val CONFIG_VERSION = "9.7.0"
+private val APP_VERSION: String = BuildConfig.VERSION_NAME
+private val CONFIG_VERSION: String = BuildConfig.VERSION_NAME
 
 
 
@@ -1333,7 +1333,7 @@ fun MainScreen() {
                         color = MaterialTheme.colorScheme.primaryContainer,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.clickable {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/ADFXCBNM"))
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/Forinxy"))
                             context.startActivity(intent)
                         }
                     ) {
@@ -1343,7 +1343,29 @@ fun MainScreen() {
                         ) {
                             Icon(Icons.Default.Send, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("@ADFXCBNM", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            Text("@Forinxy", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("MT论坛主页:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(6.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.clickable {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://bbs.binmt.cc/home.php?mod=space&uid=128752"))
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("@Forinxy", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.width(4.dp))
                             Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
                         }
