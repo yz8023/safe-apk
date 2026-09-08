@@ -3,6 +3,7 @@ package com.adfxcbnm.frostshell.builder
 import com.adfxcbnm.frostshell.config.FrostConst
 import com.adfxcbnm.frostshell.config.FrostProtectRules
 import com.adfxcbnm.frostshell.config.FrostShellConfig
+import com.adfxcbnm.frostshell.dex.FrostDexObfuscator
 import com.adfxcbnm.frostshell.dex.FrostJunkCodeGenerator
 import com.adfxcbnm.frostshell.dex.FrostStringEncryptor
 import com.adfxcbnm.frostshell.elf.FrostReadElf
@@ -68,6 +69,15 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
     private var stringEncrypt = false
     private var stringEncryptMinLen = 6
     private var stringEncryptKeywords: Set<String>? = null
+    private var dexHeaderObfuscation = false
+    private var classShuffle = false
+    private var debugRemoval = false
+    private var gotoInsertion = false
+    private var arithmeticObfuscation = false
+    private var controlFlow = false
+    private var callIndirection = false
+    private var methodOverload = false
+    private var fieldRename = false
 
     init {
         this.filePath = builder.filePath
@@ -87,6 +97,15 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         this.stringEncrypt = builder.stringEncrypt
         this.stringEncryptMinLen = builder.stringEncryptMinLen
         this.stringEncryptKeywords = builder.stringEncryptKeywords
+        this.dexHeaderObfuscation = builder.dexHeaderObfuscation
+        this.classShuffle = builder.classShuffle
+        this.debugRemoval = builder.debugRemoval
+        this.gotoInsertion = builder.gotoInsertion
+        this.arithmeticObfuscation = builder.arithmeticObfuscation
+        this.controlFlow = builder.controlFlow
+        this.callIndirection = builder.callIndirection
+        this.methodOverload = builder.methodOverload
+        this.fieldRename = builder.fieldRename
     }
 
     fun setProtectConfigFile(protectConfigFile: String?) {
@@ -123,6 +142,60 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
 
     fun setStringEncryptKeywords(stringEncryptKeywords: Set<String>?) {
         this.stringEncryptKeywords = stringEncryptKeywords
+    }
+
+    fun isDexHeaderObfuscation(): Boolean = dexHeaderObfuscation
+
+    fun setDexHeaderObfuscation(dexHeaderObfuscation: Boolean) {
+        this.dexHeaderObfuscation = dexHeaderObfuscation
+    }
+
+    fun isClassShuffle(): Boolean = classShuffle
+
+    fun setClassShuffle(classShuffle: Boolean) {
+        this.classShuffle = classShuffle
+    }
+
+    fun isDebugRemoval(): Boolean = debugRemoval
+
+    fun setDebugRemoval(debugRemoval: Boolean) {
+        this.debugRemoval = debugRemoval
+    }
+
+    fun isGotoInsertion(): Boolean = gotoInsertion
+
+    fun setGotoInsertion(gotoInsertion: Boolean) {
+        this.gotoInsertion = gotoInsertion
+    }
+
+    fun isArithmeticObfuscation(): Boolean = arithmeticObfuscation
+
+    fun setArithmeticObfuscation(arithmeticObfuscation: Boolean) {
+        this.arithmeticObfuscation = arithmeticObfuscation
+    }
+
+    fun isControlFlow(): Boolean = controlFlow
+
+    fun setControlFlow(controlFlow: Boolean) {
+        this.controlFlow = controlFlow
+    }
+
+    fun isCallIndirection(): Boolean = callIndirection
+
+    fun setCallIndirection(callIndirection: Boolean) {
+        this.callIndirection = callIndirection
+    }
+
+    fun isMethodOverload(): Boolean = methodOverload
+
+    fun setMethodOverload(methodOverload: Boolean) {
+        this.methodOverload = methodOverload
+    }
+
+    fun isFieldRename(): Boolean = fieldRename
+
+    fun setFieldRename(fieldRename: Boolean) {
+        this.fieldRename = fieldRename
     }
 
     fun isSmaller(): Boolean = smaller
@@ -583,14 +656,14 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         shellConfig.setInsnsCryptKey(deriveConfigAesKey(Arrays.copyOfRange(soKey, 0, 12)))
         val appNameNew = shellConfig.getInsnsStoreName().orEmpty()
         val dataOutputPath = dexCodeSavePath + File.separator + appNameNew
-        val countDownLatch = CountDownLatch(dexFiles.size)
         val totalClassesCount = AtomicInteger(0)
         val keepClassesCount = AtomicInteger(0)
+        // 阶段1：并行预处理（反射 clinit 注入/类拆分/字符串加密），此时方法体仍完整
+        val prepLatch = CountDownLatch(dexFiles.size)
         for (dexFile in dexFiles) {
             FrostThreadPool.execute {
-                val dexNo = FrostDexUtils.getDexNumber(dexFile.name)
-                if (dexNo < 0) {
-                    countDownLatch.countDown()
+                if (FrostDexUtils.getDexNumber(dexFile.name) < 0) {
+                    prepLatch.countDown()
                     return@execute
                 }
                 val injectedDexFile = File(dexFile.absolutePath + "_inject.dex")
@@ -633,36 +706,105 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
                         FrostLogUtils.warn("WARNING: string encrypt %s fail: %s", dexFile.name, e.message)
                     }
                 }
-                val extractedDexName = if (dexFile.name.endsWith(".dex")) dexFile.name.replace(Regex("\\.dex$"), "_extracted.dat") else "_extracted.dat"
-                val extractedDexFile = File(dexFile.parent, extractedDexName)
-                val obfuscate = !isSmaller()
-                val ret = FrostDexUtils.extractAllMethods(dexFile, extractedDexFile, getPackageName().orEmpty(), isDumpCode(), obfuscate)
-                instructionMap[dexNo] = ret
-                val dexFileRightHashes = File(dexFile.parent, FrostFileUtils.getNewFileSuffix(dexFile.name, "dat"))
-                try {
-                    FrostDexUtils.writeHashes(extractedDexFile, dexFileRightHashes)
-                    dexFile.delete()
-                    dexFileRightHashes.renameTo(dexFile)
-                } catch (exception: Exception) {
-                } finally {
-                    if (extractedDexFile.exists()) {
-                        extractedDexFile.delete()
-                    }
-                }
-                if ("classes.dex" == dexFile.name) {
-                    val dexSignature = FrostDexUtils.getDexSignature(dexFile)
-                    FrostShellConfig.getInstance().setDexSign(dexSignature)
-                }
-                countDownLatch.countDown()
+                prepLatch.countDown()
             }
         }
         FrostThreadPool.shutdown()
         try {
-            countDownLatch.await()
+            prepLatch.await()
         } catch (exception: Exception) {
         }
         if (isKeepClasses()) {
             FrostLogUtils.info("Keep classes: %d, total classes: %d", keepClassesCount.get(), totalClassesCount.get())
+        }
+        // 阶段2：文件级 DEX 混淆 pass（类打乱/Debug 移除/Goto 插入/算术/控制流/调用间接化/
+        // 方法重载/字段重命名）。必须在方法体抽取之前对方法体完整的 dex 串行执行：
+        // extractAllMethods 输出的 stub dex 携带全局引用池索引，直接操作会抛出
+        // Invalid field index / truncated 错误（此类错误导致 pass 在抽取后大面积降级）。
+        for (dexFile in dexFiles) {
+            if (!dexFile.exists()) continue
+            try {
+                if (isDebugRemoval()) {
+                    FrostDexObfuscator.stripDebugInfo(dexFile)
+                }
+                if (isClassShuffle()) {
+                    FrostDexObfuscator.shuffleDexClasses(dexFile)
+                }
+                if (isGotoInsertion()) {
+                    FrostDexObfuscator.applyGotoInsertion(dexFile)
+                }
+                if (isArithmeticObfuscation()) {
+                    FrostDexObfuscator.applyArithmeticObfuscation(dexFile)
+                }
+                if (isControlFlow()) {
+                    FrostDexObfuscator.applyControlFlow(dexFile)
+                }
+                if (isCallIndirection()) {
+                    FrostDexObfuscator.applyCallIndirection(dexFile)
+                }
+                if (isMethodOverload()) {
+                    FrostDexObfuscator.applyMethodOverload(dexFile)
+                }
+                if (isFieldRename()) {
+                    FrostDexObfuscator.applyFieldRename(dexFile)
+                }
+            } catch (e: Exception) {
+                FrostLogUtils.warn("WARNING: file-level dex obfuscation %s fail: %s", dexFile.name, e.message)
+            }
+        }
+        // 阶段3：并行方法体抽取到指令池 + hash 重写
+        val extractLatch = CountDownLatch(dexFiles.size)
+        for (dexFile in dexFiles) {
+            FrostThreadPool.execute {
+                val dexNo = FrostDexUtils.getDexNumber(dexFile.name)
+                if (dexNo < 0) {
+                    extractLatch.countDown()
+                    return@execute
+                }
+                try {
+                    val extractedDexName = if (dexFile.name.endsWith(".dex")) dexFile.name.replace(Regex("\\.dex$"), "_extracted.dat") else "_extracted.dat"
+                    val extractedDexFile = File(dexFile.parent, extractedDexName)
+                    val obfuscate = !isSmaller()
+                    val ret = FrostDexUtils.extractAllMethods(dexFile, extractedDexFile, getPackageName().orEmpty(), isDumpCode(), obfuscate)
+                    instructionMap[dexNo] = ret
+                    val dexFileRightHashes = File(dexFile.parent, FrostFileUtils.getNewFileSuffix(dexFile.name, "dat"))
+                    try {
+                        FrostDexUtils.writeHashes(extractedDexFile, dexFileRightHashes)
+                        dexFile.delete()
+                        dexFileRightHashes.renameTo(dexFile)
+                    } catch (exception: Exception) {
+                    } finally {
+                        if (extractedDexFile.exists()) {
+                            extractedDexFile.delete()
+                        }
+                    }
+                    if ("classes.dex" == dexFile.name) {
+                        val dexSignature = FrostDexUtils.getDexSignature(dexFile)
+                        FrostShellConfig.getInstance().setDexSign(dexSignature)
+                    }
+                } catch (e: Exception) {
+                    FrostLogUtils.warn("WARNING: extract %s fail: %s", dexFile.name, e.message)
+                } finally {
+                    extractLatch.countDown()
+                }
+            }
+        }
+        FrostThreadPool.shutdown()
+        try {
+            extractLatch.await()
+        } catch (exception: Exception) {
+        }
+        // 阶段4：DEX 头部混淆。仅重建头部字节（padding + SHA-1/Adler32 重算），
+        // 对抽取后的 stub dex 同样安全，故放在抽取之后执行以保留在最终产物中。
+        for (dexFile in dexFiles) {
+            if (!dexFile.exists()) continue
+            try {
+                if (isDexHeaderObfuscation()) {
+                    FrostDexObfuscator.obfuscateDexHeader(dexFile)
+                }
+            } catch (e: Exception) {
+                FrostLogUtils.warn("WARNING: file-level dex obfuscation %s fail: %s", dexFile.name, e.message)
+            }
         }
         val multiDexCode = FrostMultiDexCodeUtils.makeMultiDexCode(instructionMap)
         FrostMultiDexCodeUtils.writeMultiDexCode(dataOutputPath, multiDexCode)
@@ -996,6 +1138,15 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         var stringEncrypt = false
         var stringEncryptMinLen = 6
         var stringEncryptKeywords: Set<String>? = null
+        var dexHeaderObfuscation = false
+        var classShuffle = false
+        var debugRemoval = false
+        var gotoInsertion = false
+        var arithmeticObfuscation = false
+        var controlFlow = false
+        var callIndirection = false
+        var methodOverload = false
+        var fieldRename = false
 
         fun filePath(path: String): Builder {
             this.filePath = path
@@ -1049,6 +1200,51 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
 
         fun stringEncryptKeywords(stringEncryptKeywords: Set<String>?): Builder {
             this.stringEncryptKeywords = stringEncryptKeywords
+            return this
+        }
+
+        fun dexHeaderObfuscation(dexHeaderObfuscation: Boolean): Builder {
+            this.dexHeaderObfuscation = dexHeaderObfuscation
+            return this
+        }
+
+        fun classShuffle(classShuffle: Boolean): Builder {
+            this.classShuffle = classShuffle
+            return this
+        }
+
+        fun debugRemoval(debugRemoval: Boolean): Builder {
+            this.debugRemoval = debugRemoval
+            return this
+        }
+
+        fun gotoInsertion(gotoInsertion: Boolean): Builder {
+            this.gotoInsertion = gotoInsertion
+            return this
+        }
+
+        fun arithmeticObfuscation(arithmeticObfuscation: Boolean): Builder {
+            this.arithmeticObfuscation = arithmeticObfuscation
+            return this
+        }
+
+        fun controlFlow(controlFlow: Boolean): Builder {
+            this.controlFlow = controlFlow
+            return this
+        }
+
+        fun callIndirection(callIndirection: Boolean): Builder {
+            this.callIndirection = callIndirection
+            return this
+        }
+
+        fun methodOverload(methodOverload: Boolean): Builder {
+            this.methodOverload = methodOverload
+            return this
+        }
+
+        fun fieldRename(fieldRename: Boolean): Builder {
+            this.fieldRename = fieldRename
             return this
         }
 
