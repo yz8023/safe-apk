@@ -85,6 +85,15 @@ object FrostShellEngine {
                 if (options.stringEncrypt) this.stringEncrypt(true)
                 this.stringEncryptMinLen(options.stringEncryptMinLen)
                 this.stringEncryptKeywords(options.stringEncryptKeywords)
+                if (options.dexHeaderObfuscation) this.dexHeaderObfuscation(true)
+                if (options.classShuffle) this.classShuffle(true)
+                if (options.debugRemoval) this.debugRemoval(true)
+                if (options.gotoInsertion) this.gotoInsertion(true)
+                if (options.arithmeticObfuscation) this.arithmeticObfuscation(true)
+                if (options.controlFlow) this.controlFlow(true)
+                if (options.callIndirection) this.callIndirection(true)
+                if (options.methodOverload) this.methodOverload(true)
+                if (options.fieldRename) this.fieldRename(true)
             }
         if (options.extractMethodRules != null) {
             com.adfxcbnm.frostshell.config.FrostProtectRules.setMemberRules(options.extractMethodRules.toTypedArray())

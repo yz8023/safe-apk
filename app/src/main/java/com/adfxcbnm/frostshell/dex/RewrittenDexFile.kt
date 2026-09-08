@@ -10,14 +10,17 @@ import com.android.tools.smali.dexlib2.iface.Method
 import java.util.LinkedHashSet
 
 /**
- * 委托式 ClassDef：直接透传原类元数据与字段，仅替换方法集合；
+ * 委托式 ClassDef：直接透传原类元数据，仅替换方法/字段/annotation 集合；
  * 不调用 ImmutableClassDef（其构造会对全部方法 TreeSet 排序并调用 toString，大 dex 会 OOM）。
  * 必须继承 BaseTypeReference——DexPool 写入时对 MethodReference 做 CharSequence 校验链。
  */
 class RewrittenClassDef(
     private val source: ClassDef,
     private val directMethods: List<Method>,
-    private val virtualMethods: Iterable<Method>
+    private val virtualMethods: Iterable<Method>,
+    private val staticFields: Iterable<Field>? = null,
+    private val instanceFields: Iterable<Field>? = null,
+    private val classAnnotations: Set<Annotation>? = null
 ) : BaseTypeReference(), ClassDef {
     override fun validateReference() {
         source.validateReference()
@@ -33,13 +36,20 @@ class RewrittenClassDef(
 
     override fun getSourceFile(): String? = source.sourceFile
 
-    override fun getAnnotations(): Set<Annotation> = source.annotations
+    override fun getAnnotations(): Set<Annotation> = classAnnotations ?: source.annotations
 
-    override fun getStaticFields(): Iterable<Field> = source.staticFields
+    override fun getStaticFields(): Iterable<Field> = staticFields ?: source.staticFields
 
-    override fun getInstanceFields(): Iterable<Field> = source.instanceFields
+    override fun getInstanceFields(): Iterable<Field> = instanceFields ?: source.instanceFields
 
-    override fun getFields(): Iterable<Field> = source.fields
+    override fun getFields(): Iterable<Field> = Iterable {
+        object : Iterator<Field> {
+            private val s = (staticFields ?: source.staticFields).iterator()
+            private val i = (instanceFields ?: source.instanceFields).iterator()
+            override fun hasNext(): Boolean = s.hasNext() || i.hasNext()
+            override fun next(): Field = if (s.hasNext()) s.next() else i.next()
+        }
+    }
 
     override fun getDirectMethods(): Iterable<Method> = directMethods
 
