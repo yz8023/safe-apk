@@ -1141,7 +1141,7 @@ static volatile bool g_checkFrida = false;
 
 static void *autoProtectThread(void *) {
     while (g_autoProtectActive) {
-        for (int i = 0; i < 10 && g_autoProtectActive; i++) {
+        for (int i = 0; i < 40 && g_autoProtectActive; i++) {
             usleep(100000);
         }
         if (!g_autoProtectActive) break;
