@@ -347,8 +347,13 @@ object FrostStringEncryptor {
             // 关键词命中时无条件加密：token/apiKey 等短敏感串不受 minLen 拦截
             if (keywords.isNotEmpty() && keywords.any { value.contains(it, ignoreCase = true) }) return true
             if (value.all { it.isDigit() || it.isWhitespace() }) return false
-            // 全量兜底：只要达到长度阈值就加密，防止中文提示语/业务文案明文落池
-            return value.codePointCount(0, value.length) >= minLen
+            val cps = value.codePointCount(0, value.length)
+            // 含 CJK（中文）的串按语义单元计长，2 字即加密：覆盖"还没有任务"等短中文 UI 文案
+            val hasCjk = value.codePoints().toArray().any { cp ->
+                (cp in 0x3400..0x4DBF) || (cp in 0x4E00..0x9FFF) || (cp in 0xF900..0xFAFF) || (cp in 0x20000..0x2FA1F)
+            }
+            // 全量兜底：达到长度阈值即加密，防止中文提示语/业务文案明文落池
+            return cps >= (if (hasCjk) 2 else minLen)
         }
     }
 
