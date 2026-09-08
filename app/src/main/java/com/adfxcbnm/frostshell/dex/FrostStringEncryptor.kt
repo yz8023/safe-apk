@@ -98,8 +98,11 @@ object FrostStringEncryptor {
         var helperCount = 0
         val newClasses = ArrayList<ClassDef>(dex.classes.size)
         for (classDef in dex.classes) {
-            // 尊重排除规则：androidx 等框架类保持不动，避免改写后被壳内恢复错位命中
+            // 尊重排除规则：androidx 等框架类保持不动，仅跳过字符串加密改写
+            // 必须原样加入 newClasses，否则重写后该类会从 dex 中整体消失，
+            // 运行时引用其类型（如 okio.internal.-ByteString）将直接 ClassNotFoundException
             if (com.adfxcbnm.frostshell.config.FrostProtectRules.matchRules(classDef.type)) {
+                newClasses.add(classDef)
                 continue
             }
             val replacer = CallReplacer(classDef, keywords, minLen)
