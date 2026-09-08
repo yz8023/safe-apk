@@ -88,10 +88,20 @@ object FrostStringEncryptor {
         minLen: Int = DEFAULT_MIN_LEN
     ): Result {
         val dex = DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+        // DexPool 写入时将 16 位 const-string 引用重排到新索引，string_ids 表超 0xFFFF 时
+        // 必然触发 "Unsigned short value out of range"（见 createVectorImageBuilder 实测 67224），
+        // 该 dex 结构性无法完成重写，跳过可避免失败回退的无效开销与潜在崩溃风险。
+        if ((dex as com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile).stringSection.size > MAX_VALUE) {
+            return Result(0, 0)
+        }
         var encryptedCount = 0
         var helperCount = 0
         val newClasses = ArrayList<ClassDef>(dex.classes.size)
         for (classDef in dex.classes) {
+            // 尊重排除规则：androidx 等框架类保持不动，避免改写后被壳内恢复错位命中
+            if (com.adfxcbnm.frostshell.config.FrostProtectRules.matchRules(classDef.type)) {
+                continue
+            }
             val replacer = CallReplacer(classDef, keywords, minLen)
             var classDirty = false
             val newDirectMethods = ArrayList<Method>()
@@ -258,6 +268,11 @@ object FrostStringEncryptor {
             val keyReg = baseRegs + 3
             val newRegCount = baseRegs + totalSlots + 4
             if (newRegCount > MAX_VALUE) return null
+            // 31c/21c 等指令的寄存器仅支持 byte（v0-v255），baseRegs+2 超出 255 时
+            // BuilderInstruction31c 会抛 IllegalArgumentException: Invalid register。
+            // 无法用临时寄存器承载密文调用的方法整体跳过加密（保持原始指令），
+            // 避免整 dex 加密被单个高寄存器方法中断（此前表现为整 dex 加密必失败）。
+            if (tmpReg > 0xFF) return null
 
             val mutable = MutableMethodImplementation(impl)
 
