@@ -53,6 +53,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.Deflater
 
 abstract class FrostAndroidPackage protected constructor(builder: Builder) {
+    companion object {
+        @Volatile
+        private var bcProviderLoaded = false
+    }
     private var filePath: String? = null
     private var packageName: String? = null
     private var debuggable = false
@@ -1062,13 +1066,16 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         FrostLogUtils.info("Shell package name: %s", shellPackageName)
     }
 
-    private fun loadKeyStore(inputStream: java.io.InputStream, password: CharArray): KeyStore? {
-        try {
-            if (java.security.Security.getProvider("BC") == null) {
-                java.security.Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+    private fun loadKeyStore(inputStream: java.io.InputStream, password: CharArray, hintPath: String? = null): KeyStore? {
+        if (!bcProviderLoaded) {
+            try {
+                if (java.security.Security.getProvider("BC") == null) {
+                    java.security.Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+                }
+            } catch (t: Throwable) {
+                // BKS 分支不可用，仍可尝试 PKCS12/JKS
             }
-        } catch (t: Throwable) {
-            // BKS 分支不可用，仍可尝试 PKCS12/JKS
+            bcProviderLoaded = true
         }
         val data: ByteArray = try {
             val baos = ByteArrayOutputStream()
@@ -1081,7 +1088,14 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         } catch (e: IOException) {
             return null
         }
-        for (type in arrayOf("JKS", "PKCS12", "BKS")) {
+        // 按扩展名推断格式，优先尝试最可能的格式，避免全量试错
+        val name = hintPath?.lowercase() ?: ""
+        val ordered = when {
+            name.endsWith(".jks") || name.endsWith(".keystore") || name.endsWith(".ks") -> arrayOf("JKS", "PKCS12", "BKS")
+            name.endsWith(".bks") -> arrayOf("BKS", "JKS", "PKCS12")
+            else -> arrayOf("PKCS12", "JKS", "BKS")
+        }
+        for (type in ordered) {
             try {
                 val ks = KeyStore.getInstance(type)
                 ks.load(ByteArrayInputStream(data), password)
@@ -1116,7 +1130,7 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
             val pwdChars = storePassword.toCharArray()
             if (keystorePath != null) {
                 FileInputStream(keystorePath).use { fis ->
-                    ks = loadKeyStore(fis, pwdChars)
+                    ks = loadKeyStore(fis, pwdChars, keystorePath)
                 }
             }
             if (ks == null) {

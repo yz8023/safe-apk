@@ -237,7 +237,8 @@ private fun generateObfuscationDictV2(
 }
 
 /**
- * 导出字典为文本文件到下载目录。
+ * 导出字典为文本文件到加固输出目录。
+ * @param outputDir 目标输出目录
  * @return 导出结果描述
  */
 private fun exportDictToFile(
@@ -246,7 +247,8 @@ private fun exportDictToFile(
     groupsStr: String,
     complexity: Int,
     minLen: Int,
-    maxLen: Int
+    maxLen: Int,
+    outputDir: File
 ): String {
     return try {
         if (words.isEmpty()) return "没有可导出的词条"
@@ -259,11 +261,8 @@ private fun exportDictToFile(
         }
         val src = File(context.cacheDir, "obfuscation_dict_$ts.txt")
         src.writeText(content)
-        val dest = File(
-            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                ?: context.filesDir,
-            "obfuscation_dict_$ts.txt"
-        )
+        if (!outputDir.exists()) outputDir.mkdirs()
+        val dest = File(outputDir, "obfuscation_dict_$ts.txt")
         val saved = OutputSettings.copyOutput(context, src, dest)
         src.delete()
         if (saved != null) {
@@ -339,7 +338,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
@@ -387,6 +386,15 @@ fun MainScreen() {
     var savedSigningNameInput by remember { mutableStateOf("") }
     var renameSigningTarget by remember { mutableStateOf<SigningProfile?>(null) }
     var renameSigningNameInput by remember { mutableStateOf("") }
+    var showSignConvertDialog by remember { mutableStateOf(false) }
+    var signConvertTarget by remember { mutableStateOf<SigningProfile?>(null) }
+    var signConvertFormat by remember { mutableStateOf("BKS") }
+    var signConvertPass by remember { mutableStateOf("") }
+    var signConvertSetActive by remember { mutableStateOf(true) }
+    var signConvertInfo by remember { mutableStateOf<com.adfxcbnm.hardeningtool.SigningTool.KeystoreInfo?>(null) }
+    var signConvertLoading by remember { mutableStateOf(false) }
+    var signConvertMsg by remember { mutableStateOf("") }
+    var signConvertOk by remember { mutableStateOf(false) }
     var frostKeepClasses by remember { mutableStateOf(prefs.getBoolean("frost_keep_classes", false)) }
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
@@ -553,11 +561,49 @@ fun MainScreen() {
         if (verboseLogs) addLog(message, LogType.INFO)
     }
 
+    /**
+     * 自动保存/更新当前签名预设：默认用别名命名，其次文件名。
+     * @return 使用的预设名称；keystore 不可用时返回 null
+     */
+    fun autoSaveSigningProfile(): String? {
+        val path = signKeystorePath
+        if (path.isEmpty() || !File(path).exists()) return null
+        val alias = signAlias.trim()
+        val name = if (alias.isNotEmpty()) alias
+        else signKeystoreDisplayName.ifBlank { File(path).name }
+        val existing = savedSignings.firstOrNull { it.keystorePath == path }
+        if (existing != null) {
+            if (existing.name != name || existing.alias != signAlias ||
+                existing.storePass != signStorePass || existing.keyPass != signKeyPass
+            ) {
+                val updated = savedSignings.map {
+                    if (it.keystorePath == path) {
+                        it.copy(name = name, alias = signAlias, storePass = signStorePass, keyPass = signKeyPass)
+                    } else it
+                }
+                savedSignings = updated
+                saveSigningProfiles(prefs, updated)
+            }
+            return name
+        }
+        val profile = SigningProfile(
+            name = name,
+            keystorePath = path,
+            alias = signAlias,
+            storePass = signStorePass,
+            keyPass = signKeyPass
+        )
+        val updated = savedSignings + profile
+        savedSignings = updated
+        saveSigningProfiles(prefs, updated)
+        return name
+    }
+
     fun buildCurrentConfigText(): String {
         val sb = StringBuilder()
         sb.appendLine("== 加固工具配置导出 ==")
         sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-        sb.appendLine("版本: 9.10.27 (versionCode 69)")
+        sb.appendLine("版本: 9.10.28 (versionCode 70)")
         sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
         sb.appendLine()
         sb.appendLine("[引擎]")
@@ -706,23 +752,9 @@ fun MainScreen() {
                         .putString("sign_keystore_path", target.absolutePath)
                         .putString("sign_keystore_display_name", safeName)
                         .apply()
-                    // 自动保存为签名预设（以文件名命名，alias/密码跟随当前值），便于切换与重命名
-                    val currentName = signKeystoreDisplayName.ifBlank { File(signKeystorePath).name }
-                    val existing = savedSignings.firstOrNull {
-                        it.keystorePath == target.absolutePath
-                    }
-                    if (existing == null) {
-                        val profile = SigningProfile(
-                            name = currentName,
-                            keystorePath = target.absolutePath,
-                            alias = signAlias,
-                            storePass = signStorePass,
-                            keyPass = signKeyPass
-                        )
-                        val updated = savedSignings + profile
-                        savedSignings = updated
-                        saveSigningProfiles(prefs, updated)
-                        addLog("已自动保存签名预设: $currentName", LogType.INFO)
+                    // 自动保存为签名预设（默认别名命名，其次文件名；alias/密码跟随当前值）
+                    autoSaveSigningProfile()?.let { savedName ->
+                        addLog("已自动保存签名预设: $savedName", LogType.INFO)
                     }
                     addLog("已选择签名keystore: $safeName", LogType.SUCCESS)
                 } else {
@@ -2346,7 +2378,7 @@ fun MainScreen() {
                             if (savedSignings.isNotEmpty()) {
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "已保存签名 (点击切换)",
+                                    "已保存签名 (点击切换 / 长按格式转换)",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -2360,21 +2392,34 @@ fun MainScreen() {
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(
-                                            modifier = Modifier.fillMaxWidth().clickable {
-                                                signKeystorePath = profile.keystorePath
-                                                signKeystoreDisplayName = File(profile.keystorePath).name
-                                                signAlias = profile.alias
-                                                signStorePass = profile.storePass
-                                                signKeyPass = profile.keyPass
-                                                prefs.edit()
-                                                    .putString("sign_keystore_path", signKeystorePath)
-                                                    .putString("sign_keystore_display_name", signKeystoreDisplayName)
-                                                    .putString("sign_alias", signAlias)
-                                                    .putString("sign_store_pass", signStorePass)
-                                                    .putString("sign_key_pass", signKeyPass)
-                                                    .apply()
-                                                addLog("已切换到签名: ${profile.name}", LogType.INFO)
-                                            }.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            modifier = Modifier.fillMaxWidth().combinedClickable(
+                                                onClick = {
+                                                    signKeystorePath = profile.keystorePath
+                                                    signKeystoreDisplayName = File(profile.keystorePath).name
+                                                    signAlias = profile.alias
+                                                    signStorePass = profile.storePass
+                                                    signKeyPass = profile.keyPass
+                                                    prefs.edit()
+                                                        .putString("sign_keystore_path", signKeystorePath)
+                                                        .putString("sign_keystore_display_name", signKeystoreDisplayName)
+                                                        .putString("sign_alias", signAlias)
+                                                        .putString("sign_store_pass", signStorePass)
+                                                        .putString("sign_key_pass", signKeyPass)
+                                                        .apply()
+                                                    addLog("已切换到签名: ${profile.name}", LogType.INFO)
+                                                },
+                                                onLongClick = {
+                                                    signConvertTarget = profile
+                                                    signConvertFormat = "BKS"
+                                                    signConvertPass = profile.storePass
+                                                    signConvertSetActive = true
+                                                    signConvertInfo = null
+                                                    signConvertMsg = ""
+                                                    signConvertOk = false
+                                                    showSignConvertDialog = true
+                                                    addLog("打开签名格式转换: ${profile.name}", LogType.INFO)
+                                                }
+                                            ).padding(horizontal = 10.dp, vertical = 6.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Icon(
@@ -2410,6 +2455,25 @@ fun MainScreen() {
                                                 Icon(
                                                     Icons.Default.Edit,
                                                     contentDescription = "重命名",
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    signConvertTarget = profile
+                                                    signConvertFormat = "BKS"
+                                                    signConvertPass = profile.storePass
+                                                    signConvertSetActive = true
+                                                    signConvertInfo = null
+                                                    signConvertMsg = ""
+                                                    signConvertOk = false
+                                                    showSignConvertDialog = true
+                                                }
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.SwapHoriz,
+                                                    contentDescription = "格式转换",
                                                     modifier = Modifier.size(16.dp),
                                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
@@ -2736,7 +2800,11 @@ fun MainScreen() {
                                         .putBoolean("obfuscation_dict", true)
                                         .putStringSet("dict_imported_words", LinkedHashSet(cleanWords))
                                         .apply()
-                                    exportDictToFile(context, words, groupsStr, complex, minLen, maxLen)
+                                    val dictOutDir = OutputSettings.getOutputDir(
+                                        context,
+                                        selectedApkUri?.let { OutputSettings.resolveApkPath(context, it) }
+                                    ).first
+                                    exportDictToFile(context, words, groupsStr, complex, minLen, maxLen, dictOutDir)
                                 }
                                 dictLastInfo = ""
                                 dictImportInfo = exportInfo
@@ -2884,6 +2952,189 @@ fun MainScreen() {
             dismissButton = {
                 TextButton(onClick = { renameSigningTarget = null }) {
                     Text("取消")
+                }
+            }
+        )
+    }
+
+    // ===== 签名格式转换对话框（长按签名预设或点击转换按钮打开） =====
+    signConvertTarget?.let { target ->
+        LaunchedEffect(target.keystorePath, target.storePass, target.alias) {
+            signConvertLoading = true
+            signConvertInfo = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    com.adfxcbnm.hardeningtool.SigningTool.loadKeystoreInfo(
+                        File(target.keystorePath), target.storePass, target.alias
+                    )
+                }.getOrNull()
+            }
+            signConvertLoading = false
+        }
+        AlertDialog(
+            onDismissRequest = { showSignConvertDialog = false },
+            title = { Text("格式转换 — ${target.name}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "将当前签名转换为其他格式，输出到加固输出目录；可立即设为签名密钥使用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    // 源签名信息
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                            Text("源签名", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Spacer(Modifier.height(4.dp))
+                            val info = signConvertInfo
+                            InfoRow("预设", target.name)
+                            InfoRow("文件", File(target.keystorePath).name)
+                            InfoRow("别名", if (target.alias.isNotBlank()) target.alias else "自动")
+                            if (info != null) {
+                                InfoRow("格式", info.type)
+                                InfoRow("有效期至", info.notAfter)
+                                InfoRow("密钥", "${info.keyAlg} ${info.keySize}")
+                            } else {
+                                Text(
+                                    if (signConvertLoading) "正在读取证书信息..." else "证书信息读取失败（密码可能不对）",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    // 转换目标格式选择
+                    Text("目标格式", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("BKS", "P12", "PK8/PEM").forEach { fmt ->
+                            FilterChip(
+                                selected = signConvertFormat == fmt,
+                                onClick = { signConvertFormat = fmt },
+                                label = { Text(fmt, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                    Text(
+                        when (signConvertFormat) {
+                            "BKS" -> "BouncyCastle KeyStore，Android 老版本(≤7)专用格式，兼容性最好。"
+                            "P12" -> "PKCS12 标准格式，Android 9+ 与跨平台工具通用。"
+                            else -> "PK8 私钥 + X509 证书 PEM，用于 apksigner --key 手动签名。"
+                        },
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = signConvertPass,
+                        onValueChange = { signConvertPass = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("密码 (store/key)") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation()
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("转换后设为签名密钥", fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = signConvertSetActive,
+                            onCheckedChange = { signConvertSetActive = it }
+                        )
+                    }
+                    if (signConvertMsg.isNotEmpty()) {
+                        Text(
+                            signConvertMsg,
+                            color = if (signConvertOk) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !signConvertLoading,
+                    onClick = {
+                        val profile = target
+                        val pass = signConvertPass
+                        signConvertLoading = true
+                        signConvertMsg = ""
+                        val fmt = signConvertFormat
+                        scope.launch {
+                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                runCatching {
+                                    val src = File(profile.keystorePath)
+                                    val exportDir = OutputSettings.getOutputDir(
+                                        context,
+                                        selectedApkUri?.let { OutputSettings.resolveApkPath(context, it) }
+                                    ).first
+                                    if (!exportDir.exists()) exportDir.mkdirs()
+                                    val base = src.name.substringBeforeLast('.').ifEmpty { src.name }
+                                    when (fmt) {
+                                        "BKS" -> {
+                                            val out = File(exportDir, "$base.bks")
+                                            val ok = SigningTool.convertKeystoreFormat(
+                                                src, pass, profile.alias.ifBlank { null }, out, "BKS", pass, pass,
+                                                srcKeyPass = pass
+                                            ) { e -> signConvertMsg = e }
+                                            if (ok) "BKS: ${out.absolutePath}" else ""
+                                        }
+                                        "P12" -> {
+                                            val out = File(exportDir, "$base.p12")
+                                            val ok = SigningTool.convertToP12(
+                                                src, pass, profile.alias.ifBlank { null }, out, pass, pass
+                                            ) { e -> signConvertMsg = e }
+                                            if (ok) "P12: ${out.absolutePath}" else ""
+                                        }
+                                        else -> {
+                                            val pk8 = File(exportDir, "$base.pk8")
+                                            val pem = File(exportDir, "$base.x509.pem")
+                                            val ok = SigningTool.exportPk8Pem(
+                                                src, pass, profile.alias.ifBlank { null }, pk8, pem
+                                            ) { e -> signConvertMsg = e }
+                                            if (ok) "PK8: ${pk8.absolutePath}\nPEM: ${pem.absolutePath}" else ""
+                                        }
+                                    }
+                                }.getOrElse { e -> "失败: ${e.message}" }
+                            }
+                            signConvertLoading = false
+                            val prefix = result.substringBefore('\n')
+                            signConvertOk = prefix.startsWith("BKS:") || prefix.startsWith("P12:") || prefix.startsWith("PK8:")
+                            if (signConvertOk) {
+                                val newPath = prefix.substringAfter(": ").trim()
+                                if (signConvertSetActive && File(newPath).exists()) {
+                                    signKeystorePath = newPath
+                                    signKeystoreDisplayName = File(newPath).name
+                                    signAlias = profile.alias
+                                    signStorePass = pass
+                                    signKeyPass = pass
+                                    prefs.edit()
+                                        .putString("sign_keystore_path", newPath)
+                                        .putString("sign_keystore_display_name", File(newPath).name)
+                                        .putString("sign_alias", signAlias)
+                                        .putString("sign_store_pass", pass)
+                                        .putString("sign_key_pass", pass)
+                                        .apply()
+                                    addLog("格式转换完成并设为签名密钥: $newPath", LogType.SUCCESS)
+                                } else {
+                                    addLog("格式转换完成: $result", LogType.SUCCESS)
+                                }
+                            } else {
+                                signConvertMsg = result
+                            }
+                        }
+                    }
+                ) {
+                    if (signConvertLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                        Text("转换中...", fontSize = 12.sp)
+                    } else {
+                        Text("执行转换", fontSize = 12.sp)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSignConvertDialog = false }) {
+                    Text("关闭")
                 }
             }
         )
@@ -3140,6 +3391,9 @@ fun MainScreen() {
                                             .putString("sign_key_pass", gk.keyPass)
                                             .putString("sign_alias", gk.alias)
                                             .apply()
+                                        autoSaveSigningProfile()?.let { savedName ->
+                                            addLog("已自动保存签名预设: $savedName", LogType.INFO)
+                                        }
                                     }
                                 }
                             },
@@ -3342,6 +3596,9 @@ fun MainScreen() {
                                             .putString("sign_alias", gk.alias)
                                             .apply()
                                         signToolStorePass = storePass
+                                        autoSaveSigningProfile()?.let { savedName ->
+                                            addLog("已自动保存签名预设: $savedName", LogType.INFO)
+                                        }
                                     }
                                 }
                                 }
