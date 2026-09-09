@@ -1,5 +1,6 @@
 package com.adfxcbnm.frostshell.dex
 
+import com.adfxcbnm.frostshell.util.FrostIoUtils
 import com.adfxcbnm.frostshell.util.FrostLogUtils
 import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.DexFileFactory
@@ -101,6 +102,22 @@ object FrostStringEncryptor {
         allUrl: Boolean = true,
         includeInitClinit: Boolean = true
     ): Result {
+        // 大 dex 内存守卫：dexlib2 的 DexPool 写回会把全部类/方法体/字符串池化进对象图，
+        // 加上本 pass 对所有命中方法做 MutableMethodImplementation 深拷贝，超大 classes.dex
+        // （源 APK 30-100MB 时单文件可达 20-40MB+）会让加固工具 App 自身 OOM 闪退。
+        // 阈值按当前进程堆上限自适应（大 heap 设备 ~512MB，普通设备 256MB）：
+        //   heap 512MB -> 跳过 >42MB 的 dex；heap 256MB -> 跳过 >21MB 的 dex。
+        // DexPool 对象图放大经验倍率 8-12x，取 maxHeap/12 保证峰值堆不超 75% 水位。
+        // 通过 TMPFS/APK 解压得到的 dex 按实际文件大小估算，避免静默崩溃。
+        val maxHeap = Runtime.getRuntime().maxMemory()
+        val dexSize = dexFile.length()
+        if (maxHeap > 0 && dexSize > maxHeap / 12) {
+            FrostLogUtils.warn(
+                "string encrypt: skip %s (dex too large: %dMB, heap=%dMB), would OOM the tool",
+                dexFile.name, dexSize / (1024 * 1024), maxHeap / (1024 * 1024)
+            )
+            return Result(0, 0)
+        }
         val dex = DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
         // 方法池保护：Dalvik 的 invoke 指令（format 35c/3rc）用 16 位 method 索引，且没有 jumbo 变体，
         // 因此单 dex 的 method_ids 数量必须远小于 65,535。实测完整 palm 的 classes7.dex method_ids=65266、
@@ -217,7 +234,8 @@ object FrostStringEncryptor {
             // 委托式 DexFile：交由 DexPool 原样写入，避免 ImmutableDexFile 对全部类再做 immutable 化
             val backup = java.io.File(dexFile.absolutePath + ".stringenc_backup")
             val wroteBackup = try {
-                backup.writeBytes(dexFile.readBytes())
+                // 流式复制，避免整 dex 以 ByteArray 形式多驻留一份（超大 dex 下会加剧 OOM）
+                FrostIoUtils.copyFile(dexFile.absolutePath, backup.absolutePath)
                 true
             } catch (t: Throwable) {
                 false
@@ -232,7 +250,7 @@ object FrostStringEncryptor {
                 var restored = false
                 if (wroteBackup) {
                     try {
-                        dexFile.writeBytes(backup.readBytes())
+                        FrostIoUtils.copyFile(backup.absolutePath, dexFile.absolutePath)
                         restored = true
                     } catch (r: Throwable) {
                         // 恢复失败：文件可能已损坏，交由上层逻辑兜底

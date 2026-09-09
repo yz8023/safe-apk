@@ -378,6 +378,7 @@ fun MainScreen() {
     }
     var signEnabled by remember { mutableStateOf(prefs.getBoolean("sign_enabled", true)) }
     var signKeystorePath by remember { mutableStateOf(prefs.getString("sign_keystore_path", "") ?: "") }
+    var signKeystoreDisplayName by remember { mutableStateOf(prefs.getString("sign_keystore_display_name", "") ?: "") }
     var signAlias by remember { mutableStateOf(prefs.getString("sign_alias", "") ?: "") }
     var signStorePass by remember { mutableStateOf(prefs.getString("sign_store_pass", "") ?: "") }
     var signKeyPass by remember { mutableStateOf(prefs.getString("sign_key_pass", "") ?: "") }
@@ -459,6 +460,7 @@ fun MainScreen() {
     var signToolLoading by remember { mutableStateOf(false) }
     var signToolError by remember { mutableStateOf("") }
     var signToolTab by remember { mutableStateOf(0) }
+    var signToolAutoLoad by remember { mutableStateOf(false) }
     var signToolConvertMsg by remember { mutableStateOf("") }
     var signToolConvertOk by remember { mutableStateOf(false) }
     var signToolGenAlias by remember { mutableStateOf("") }
@@ -590,15 +592,23 @@ fun MainScreen() {
     ) { uri ->
         if (uri != null) {
             try {
-                val ext = uri.lastPathSegment?.substringAfterLast(".", "keystore") ?: "keystore"
-                val target = File(context.filesDir, "custom_sign_keystore.$ext")
+                // 保留原始文件名导入（不复制改名），便于用户识别签名来源；
+                // 写入应用私有目录避免权限问题，文件名做安全净化（去掉路径分隔符）。
+                val rawName = uri.lastPathSegment?.substringAfterLast("/")?.substringAfterLast(":")
+                    ?: "custom_sign_keystore"
+                val safeName = rawName.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "custom_sign_keystore" }
+                val target = File(context.filesDir, safeName)
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     target.outputStream().use { output -> input.copyTo(output) }
                 }
                 if (target.exists() && target.length() > 0) {
                     signKeystorePath = target.absolutePath
-                    prefs.edit().putString("sign_keystore_path", target.absolutePath).apply()
-                    addLog("已选择签名keystore: ${target.name}", LogType.SUCCESS)
+                    signKeystoreDisplayName = safeName
+                    prefs.edit()
+                        .putString("sign_keystore_path", target.absolutePath)
+                        .putString("sign_keystore_display_name", safeName)
+                        .apply()
+                    addLog("已选择签名keystore: $safeName", LogType.SUCCESS)
                 } else {
                     addLog("keystore文件读取失败", LogType.WARNING)
                 }
@@ -2102,17 +2112,58 @@ fun MainScreen() {
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                            // ===== 分区1：签名密钥来源 =====
                             Text(
-                                text = if (signKeystorePath.isNotEmpty())
-                                    "自定义keystore: ${File(signKeystorePath).name}"
-                                else
-                                    "默认调试keystore (adh_debug.p12)",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
+                                "签名密钥来源",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
                             )
+                            Spacer(Modifier.height(6.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.VpnKey,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (signKeystorePath.isNotEmpty())
+                                                signKeystoreDisplayName.ifBlank { File(signKeystorePath).name }
+                                            else
+                                                "默认调试keystore (adh_debug.p12)",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (signKeystorePath.isNotEmpty()) {
+                                                val aliasShown = if (signAlias.isNotBlank()) "alias=${signAlias}" else "alias=自动"
+                                                "自定义keystore · $aliasShown"
+                                            } else {
+                                                "内置签名 · 无需配置"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
                             Spacer(Modifier.height(8.dp))
+                            // ===== 分区1 操作按钮 =====
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 FilledTonalButton(
                                     onClick = { signKeystorePickerLauncher.launch(arrayOf("*/*")) },
@@ -2123,6 +2174,27 @@ fun MainScreen() {
                                     Spacer(Modifier.width(4.dp))
                                     Text("选择keystore", fontSize = 13.sp)
                                 }
+                                OutlinedButton(
+                                    onClick = {
+                                        signToolKeystorePath = signKeystorePath
+                                        signToolStorePass = signStorePass
+                                        signToolAlias = signAlias
+                                        signToolTab = 0
+                                        signToolInfo = null
+                                        signToolError = ""
+                                        signToolAutoLoad = true
+                                        showSigningToolDialog = true
+                                    },
+                                    modifier = Modifier.weight(1f).height(36.dp),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("预览证书", fontSize = 13.sp)
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(
                                     onClick = {
                                         signAliasInput = signAlias
@@ -2140,25 +2212,38 @@ fun MainScreen() {
                                 TextButton(
                                     onClick = {
                                         signKeystorePath = ""
+                                        signKeystoreDisplayName = ""
                                         signAlias = ""
                                         signStorePass = ""
                                         signKeyPass = ""
                                         prefs.edit()
                                             .remove("sign_keystore_path")
+                                            .remove("sign_keystore_display_name")
                                             .remove("sign_alias")
                                             .remove("sign_store_pass")
                                             .remove("sign_key_pass")
                                             .apply()
                                         addLog("已清除自定义签名，使用默认keystore", LogType.INFO)
                                     },
-                                    modifier = Modifier.height(36.dp)
+                                    modifier = Modifier.weight(1f).height(36.dp)
                                 ) {
                                     Text("清除", fontSize = 13.sp)
                                 }
                             }
+                            Divider(modifier = Modifier.padding(vertical = 8.dp))
+                            // ===== 分区2：签名预设 =====
+                            Text(
+                                "签名预设",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.height(6.dp))
                             OutlinedButton(
                                 onClick = {
-                                    val cur = if (signKeystorePath.isNotEmpty()) File(signKeystorePath).name else "默认调试keystore"
+                                    val cur = if (signKeystorePath.isNotEmpty())
+                                        signKeystoreDisplayName.ifBlank { File(signKeystorePath).name }
+                                    else "默认调试keystore"
                                     savedSigningNameInput = if (signAlias.isNotBlank()) signAlias else cur
                                     showSaveSigningDialog = true
                                 },
@@ -2188,11 +2273,13 @@ fun MainScreen() {
                                         Row(
                                             modifier = Modifier.fillMaxWidth().clickable {
                                                 signKeystorePath = profile.keystorePath
+                                                signKeystoreDisplayName = File(profile.keystorePath).name
                                                 signAlias = profile.alias
                                                 signStorePass = profile.storePass
                                                 signKeyPass = profile.keyPass
                                                 prefs.edit()
                                                     .putString("sign_keystore_path", signKeystorePath)
+                                                    .putString("sign_keystore_display_name", signKeystoreDisplayName)
                                                     .putString("sign_alias", signAlias)
                                                     .putString("sign_store_pass", signStorePass)
                                                     .putString("sign_key_pass", signKeyPass)
@@ -2246,13 +2333,21 @@ fun MainScreen() {
                                     Spacer(Modifier.height(4.dp))
                                 }
                             }
-                            Spacer(Modifier.height(8.dp))
+                            Divider(modifier = Modifier.padding(vertical = 8.dp))
+                            // ===== 分区3：签名工具 =====
+                            Text(
+                                "签名工具",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.height(6.dp))
                             OutlinedButton(
                                 onClick = {
                                     signToolKeystorePath = signKeystorePath
                                     signToolStorePass = signStorePass
                                     signToolAlias = signAlias
-                                    signToolTab = 0
+                                    signToolTab = 1
                                     signToolInfo = null
                                     signToolError = ""
                                     showSigningToolDialog = true
@@ -2708,6 +2803,31 @@ fun MainScreen() {
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // 预览证书：打开对话框后自动读取当前 keystore 的证书信息
+                    LaunchedEffect(signToolAutoLoad) {
+                        if (signToolAutoLoad && signToolKeystorePath.isNotEmpty()) {
+                            val path = signToolKeystorePath
+                            val pass = signToolStorePass
+                            val alias = signToolAlias
+                            signToolLoading = true
+                            signToolInfo = null
+                            signToolError = ""
+                            val info = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                runCatching {
+                                    com.adfxcbnm.hardeningtool.SigningTool.loadKeystoreInfo(
+                                        File(path), pass, alias
+                                    )
+                                }.getOrNull()
+                            }
+                            signToolLoading = false
+                            if (info == null) {
+                                signToolError = "读取失败：文件不存在 / 密码错误 / 格式不支持（支持 p12/pfx/jks/keystore/ks/bks）"
+                            } else {
+                                signToolInfo = info
+                            }
+                            signToolAutoLoad = false
+                        }
+                    }
                     // Tab 切换
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2855,11 +2975,13 @@ fun MainScreen() {
                                     signToolGenResult = gk
                                     if (gk != null) {
                                         signKeystorePath = gk.file.absolutePath
+                                        signKeystoreDisplayName = gk.file.name
                                         signStorePass = gk.storePass
                                         signKeyPass = gk.keyPass
                                         signAlias = gk.alias
                                         prefs.edit()
                                             .putString("sign_keystore_path", gk.file.absolutePath)
+                                            .putString("sign_keystore_display_name", gk.file.name)
                                             .putString("sign_store_pass", gk.storePass)
                                             .putString("sign_key_pass", gk.keyPass)
                                             .putString("sign_alias", gk.alias)
@@ -3054,11 +3176,13 @@ fun MainScreen() {
                                     signToolGenResult = gk
                                     if (gk != null) {
                                         signKeystorePath = gk.file.absolutePath
+                                        signKeystoreDisplayName = gk.file.name
                                         signStorePass = storePass
                                         signKeyPass = gk.keyPass
                                         signAlias = gk.alias
                                         prefs.edit()
                                             .putString("sign_keystore_path", gk.file.absolutePath)
+                                            .putString("sign_keystore_display_name", gk.file.name)
                                             .putString("sign_store_pass", storePass)
                                             .putString("sign_key_pass", gk.keyPass)
                                             .putString("sign_alias", gk.alias)
@@ -3150,7 +3274,12 @@ fun MainScreen() {
                                         val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                             runCatching {
                                                 val sf = File(path)
-                                                val bksOut = File(sf.parentFile ?: context.filesDir, sf.name.substringBeforeLast('.') + ".bks")
+                                                val exportDir = OutputSettings.getOutputDir(
+                                                    context,
+                                                    selectedApkUri?.let { OutputSettings.resolveApkPath(context, it) }
+                                                ).first
+                                                if (!exportDir.exists()) exportDir.mkdirs()
+                                                val bksOut = File(exportDir, sf.name.substringBeforeLast('.') + ".bks")
                                                 val ok = SigningTool.convertKeystoreFormat(
                                                     sf, pass, alias.ifBlank { null }, bksOut, "BKS", pass, pass,
                                                     srcKeyPass = pass
@@ -3161,11 +3290,13 @@ fun MainScreen() {
                                         signToolConvertOk = out.startsWith("转换为 BKS")
                                         if (signToolConvertOk && out.isNotEmpty()) {
                                             signKeystorePath = out.removePrefix("转换为 BKS: ")
+                                            signKeystoreDisplayName = File(signKeystorePath).name
                                             signAlias = alias
                                             signStorePass = pass
                                             signKeyPass = pass
                                             prefs.edit()
                                                 .putString("sign_keystore_path", signKeystorePath)
+                                                .putString("sign_keystore_display_name", signKeystoreDisplayName)
                                                 .putString("sign_alias", signAlias)
                                                 .putString("sign_store_pass", pass)
                                                 .putString("sign_key_pass", pass)
@@ -3188,7 +3319,12 @@ fun MainScreen() {
                                         val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                             runCatching {
                                                 val sf = File(path)
-                                                val p12Out = File(sf.parentFile ?: context.filesDir, sf.name.substringBeforeLast('.') + ".p12")
+                                                val exportDir = OutputSettings.getOutputDir(
+                                                    context,
+                                                    selectedApkUri?.let { OutputSettings.resolveApkPath(context, it) }
+                                                ).first
+                                                if (!exportDir.exists()) exportDir.mkdirs()
+                                                val p12Out = File(exportDir, sf.name.substringBeforeLast('.') + ".p12")
                                                 val ok = SigningTool.convertToP12(
                                                     sf, pass, alias.ifBlank { null }, p12Out, pass, pass
                                                 ) { e -> signToolConvertMsg = e }
@@ -3198,9 +3334,11 @@ fun MainScreen() {
                                         signToolConvertOk = out.startsWith("转换为 P12")
                                         if (signToolConvertOk && out.isNotEmpty()) {
                                             signKeystorePath = out.removePrefix("转换为 P12: ")
+                                            signKeystoreDisplayName = File(signKeystorePath).name
                                             signStorePass = pass
                                             prefs.edit()
                                                 .putString("sign_keystore_path", signKeystorePath)
+                                                .putString("sign_keystore_display_name", signKeystoreDisplayName)
                                                 .putString("sign_store_pass", pass)
                                                 .apply()
                                         }
@@ -3223,9 +3361,14 @@ fun MainScreen() {
                                     val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                         runCatching {
                                             val sf = File(path)
+                                            val exportDir = OutputSettings.getOutputDir(
+                                                context,
+                                                selectedApkUri?.let { OutputSettings.resolveApkPath(context, it) }
+                                            ).first
+                                            if (!exportDir.exists()) exportDir.mkdirs()
                                             val base = sf.name.substringBeforeLast('.').ifEmpty { sf.name }
-                                            val pk8Out = File(sf.parentFile ?: context.filesDir, "$base.pk8")
-                                            val pemOut = File(sf.parentFile ?: context.filesDir, "$base.x509.pem")
+                                            val pk8Out = File(exportDir, "$base.pk8")
+                                            val pemOut = File(exportDir, "$base.x509.pem")
                                             val ok = SigningTool.exportPk8Pem(
                                                 sf, pass, alias.ifBlank { null }, pk8Out, pemOut
                                             ) { e -> signToolConvertMsg = e }
