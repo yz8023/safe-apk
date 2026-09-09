@@ -269,6 +269,66 @@ object AndroidManifestModifier {
         }
     }
 
+    /**
+     * 从二进制 AndroidManifest.xml 收集所有组件引用的类（application/activity/alias/
+     * service/receiver/provider/instrumentation 的 android:name 属性）。
+     * 返回 dex 描述符（"Lcom/foo/Bar;"）。相对名（".Bar" 或纯类名）按 package 前缀展开。
+     * 供 class-rename 保护清单组件，避免组件类被重命名后清单失配导致启动崩溃。
+     */
+    fun collectComponentClasses(orig: ByteArray, log: ((String) -> Unit)? = null): Set<String> {
+        val out = LinkedHashSet<String>()
+        try {
+            if (orig.size < 8) return out
+            val r = TrackingStream(ByteArrayInputStream(orig))
+            val xmlType = r.readUnsignedShort()
+            val headerSize = r.readUnsignedShort()
+            r.readInt()
+            if (xmlType != RES_XML_TYPE || headerSize != 8) return out
+            val stringPoolResult = readStringPool(r, log)
+            val stringPool = stringPoolResult.strings
+            if (stringPool.isEmpty()) return out
+            val allChunks = readAllChunks(r, stringPool, log)
+            val elements = allChunks.filterIsInstance<Chunk.Element>()
+            var packageName: String? = null
+            for (el in elements) {
+                if (el.name == "manifest" && el.isStart) {
+                    for (a in el.attrs ?: emptyList()) if (a.name == "package") packageName = a.value
+                }
+            }
+            val componentTags = arrayOf(
+                "application", "activity", "activity-alias", "service", "receiver", "provider", "instrumentation"
+            )
+            for (el in elements) {
+                if (!el.isStart) continue
+                if (el.name !in componentTags) continue
+                for (a in el.attrs ?: emptyList()) {
+                    if (a.name != "name" || a.value.isEmpty()) continue
+                    if (a.type != TYPE_STRING) continue
+                    toComponentDescriptor(a.value, packageName)?.let { out.add(it) }
+                }
+            }
+        } catch (e: Exception) {
+            log?.invoke("collectComponentClasses: ${e.message}")
+        }
+        return out
+    }
+
+    private fun toComponentDescriptor(raw: String, packageName: String?): String? {
+        var cls = raw.trim()
+        if (cls.startsWith(".")) {
+            if (packageName.isNullOrEmpty()) return null
+            cls = "$packageName$cls"
+        } else if (!cls.contains(".")) {
+            if (packageName.isNullOrEmpty()) return null
+            cls = "$packageName.$cls"
+        }
+        if (!cls.startsWith("L")) {
+            cls = "L" + cls.replace('.', '/') + ";"
+        }
+        if (cls.length <= 2) return null
+        return cls
+    }
+
     private fun readStringPool(r: TrackingStream, log: ((String) -> Unit)? = null): StringPoolResult {
         val basePos = r.pos
         val chunkType = r.readUnsignedShort()

@@ -11,6 +11,13 @@ object FrostShellEngine {
 
     fun prepare(context: Context): Boolean {
         return try {
+            // 加载已保存的混淆字典词条（prefs 持久化），供类名/字段名重命名取词
+            val imported = context.getSharedPreferences(
+                "adfxcbnm_settings", android.content.Context.MODE_PRIVATE
+            ).getStringSet("dict_imported_words", null)
+            com.adfxcbnm.frostshell.config.FrostNameDictionary.setWords(
+                imported?.toList() ?: emptyList()
+            )
             val filesDir = context.filesDir
             val shellFilesDir = File(filesDir, "shell-files")
             // filesDir 跨会话持久化：上一次运行（随机化/伪装/OOM 中断）可能已改写

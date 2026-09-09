@@ -731,9 +731,30 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         // extractAllMethods 输出的 stub dex 携带全局引用池索引，直接操作会抛出
         // Invalid field index / truncated 错误（此类错误导致 pass 在抽取后大面积降级）。
         // 类重命名需要跨 dex 全局映射，须在进入本循环前置构建。
+        // task②: manifest 组件类必须保护（重命名不同步清单会导致启动崩溃）。
+        // 收集 application/activity/service/receiver/provider 的 android:name 引用类。
+        val manifestFile = try {
+            File(getManifestFilePath(packageDir))
+        } catch (e: Exception) {
+            null
+        }
+        val componentProtected = LinkedHashSet<String>()
+        if (manifestFile != null && manifestFile.exists()) {
+            try {
+                componentProtected.addAll(
+                    com.adfxcbnm.frostshell.res.FrostApkManifestEditor
+                        .collectComponentClasses(manifestFile.absolutePath)
+                )
+            } catch (e: Exception) {
+                FrostLogUtils.warn("class rename: manifest component scan fail: %s", e.message)
+            }
+        }
+        // 保护自我保护类（manifest 注入的 provider 精确类名），防止壳自检失效。
+        // 仅精确保留 SecurityCheckProvider：其余 com/adfxcbnm/protect 内部类仍需参与混淆。
+        componentProtected.add("Lcom/adfxcbnm/protect/SecurityCheckProvider;")
         val classRenameMap: Map<String, String> = if (isClassRename()) {
             try {
-                FrostClassRenamer.buildClassRenameMap(dexFiles)
+                FrostClassRenamer.buildClassRenameMap(dexFiles, componentProtected)
             } catch (e: Exception) {
                 FrostLogUtils.warn("WARNING: class rename map build fail: %s", e.message)
                 emptyMap()
@@ -766,7 +787,7 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
                     FrostDexObfuscator.applyMethodOverload(dexFile)
                 }
                 if (isFieldRename()) {
-                    FrostDexObfuscator.applyFieldRename(dexFile)
+                    FrostDexObfuscator.applyFieldRename(dexFile, componentProtected)
                 }
                 if (classRenameMap.isNotEmpty() && isClassRename()) {
                     FrostClassRenamer.applyClassRenameDex(dexFile, classRenameMap)
