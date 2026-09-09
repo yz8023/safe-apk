@@ -168,8 +168,10 @@ object FrostDexUtils {
         val instructionList = ArrayList<Instruction>()
         var dex: Dex? = null
         var randomAccessFile: RandomAccessFile? = null
-        val dexData = FrostIoUtils.readFile(dexFile.absolutePath)
-        FrostIoUtils.writeFile(outDexFile.absolutePath, dexData)
+        // 流式复制原始 dex 到输出文件：原先 readFile(整 dex ByteArray) + writeFile 会让大 dex
+        // （30-100MB APK 的 classes.dex 可达 20-40MB+）额外驻留一份完整字节数组，叠加 dexlib2
+        // 二次读入与 RandomAccessFile 句柄，内存放大明显。copyFile 走流式，不产生整 dex 副本。
+        FrostIoUtils.copyFile(dexFile.absolutePath, outDexFile.absolutePath)
         val dumpJSON = if (dumpCode) JSONArray() else null
         try {
             dex = Dex(dexFile)
