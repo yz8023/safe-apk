@@ -118,6 +118,21 @@ object FrostStringEncryptor {
             )
             return Result(0, 0)
         }
+        // 动态可用堆守卫（第二道保险）：静态阈值只按文件大小粗判，但 DexPool 写回时对象图
+        // 会在短时间内再放大 8-12x。若当前进程已吃进较多内存（前面 dex 处理残留、UI 等），
+        // 即使 dex 未超静态阈值也可能 OOM。故在加载前评估当前可用堆，按 10x 预估峰值，
+        // 不足即跳过该 dex（保留后续 dex 的加密机会，而非让整个加固进程闪退）。
+        if (maxHeap > 0) {
+            val usedHeap = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()
+            val availHeap = maxHeap - usedHeap
+            if (availHeap > 0 && dexSize > availHeap / 10) {
+                FrostLogUtils.warn(
+                    "string encrypt: skip %s (avail heap %dMB too low for dex %dMB x10 estimate)",
+                    dexFile.name, availHeap / (1024 * 1024), dexSize / (1024 * 1024)
+                )
+                return Result(0, 0)
+            }
+        }
         val dex = DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
         // 方法池保护：Dalvik 的 invoke 指令（format 35c/3rc）用 16 位 method 索引，且没有 jumbo 变体，
         // 因此单 dex 的 method_ids 数量必须远小于 65,535。实测完整 palm 的 classes7.dex method_ids=65266、

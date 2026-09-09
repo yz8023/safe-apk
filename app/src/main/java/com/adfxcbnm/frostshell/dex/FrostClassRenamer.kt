@@ -733,9 +733,21 @@ object FrostClassRenamer {
 
             override fun getFields(): Iterable<Field> = fields
 
-            override fun getDirectMethods(): Iterable<Method> = methods.filter { (it.accessFlags and 0x2) == 0 }
+            // DEX 规范：direct_methods = static(0x8) + private(0x2) + 构造器(<init>/<clinit>)，
+            // 其余实例方法（含接口 abstract/default 方法）进 virtual_methods。
+            // 原实现仅按 private 位反向一刀切，导致接口方法全塞进 direct、virtual 被掏空，
+            // DexPool 写回后 invoke-virtual/invoke-interface 解析到错误方法表，运行期抛
+            // IncompatibleClassChangeError(Found interface X, but class was expected)。
+            // 接口(0x200)与注解(0x2000)类的方法分区尤其敏感，直接按规范走同一套判定。
+            override fun getDirectMethods(): Iterable<Method> = methods.filter {
+                (it.accessFlags and 0x8) != 0 || (it.accessFlags and 0x2) != 0 ||
+                    it.name == "<init>" || it.name == "<clinit>"
+            }
 
-            override fun getVirtualMethods(): Iterable<Method> = methods.filter { (it.accessFlags and 0x2) != 0 }
+            override fun getVirtualMethods(): Iterable<Method> = methods.filter {
+                (it.accessFlags and 0x8) == 0 && (it.accessFlags and 0x2) == 0 &&
+                    it.name != "<init>" && it.name != "<clinit>"
+            }
 
             override fun getMethods(): Iterable<Method> = methods
         }

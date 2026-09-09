@@ -180,15 +180,20 @@ object FrostDexUtils {
             val classDefs = dex.classDefs()
             saveCodeOffAppear(dex, dexNumber)
             for (classDef in classDefs) {
-                if (FrostProtectRules.getInstance().matchRules(classDef.toString())) continue
                 if (classDef.classDataOffset == 0) {
                     FrostLogUtils.noisy("class '%s' data offset is zero", classDef.toString())
                     continue
                 }
+                // 排除判断使用 dex.typeNames() 得到的纯 descriptor（"Lxxx/yyy;"），而非
+                // classDef.toString()：dx 库该实现返回 "类型名 extends 父类名" 带后缀，
+                // 前缀型规则（Landroidx/.* 等）可被 .* 吞掉尾巴而侥幸命中，但精确类名规则
+                // （无 .* 通配）会因 extends 尾巴导致 matches() 失败，保护类被错误抽取。
+                // 统一用纯 descriptor 保证两类规则都精确匹配。
+                val className = dex.typeNames()[classDef.typeIndex]
+                if (FrostProtectRules.getInstance().matchRules(className)) continue
                 val classJSONObject = if (dumpCode) JSONObject() else null
                 val classJSONArray = if (dumpCode) JSONArray() else null
                 val classData = dex.readClassData(classDef)
-                val className = dex.typeNames()[classDef.typeIndex]
                 val humanizeTypeName = FrostTypeUtils.getHumanizeTypeName(className)
                 for (method in classData.allMethods()) {
                     if (getCodeOffAppearCount(dexNumber, method.codeOffset) > 1) {
