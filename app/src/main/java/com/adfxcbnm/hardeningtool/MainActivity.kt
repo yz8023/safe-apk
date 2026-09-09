@@ -385,6 +385,8 @@ fun MainScreen() {
     var savedSignings by remember { mutableStateOf(loadSigningProfiles(prefs)) }
     var showSaveSigningDialog by remember { mutableStateOf(false) }
     var savedSigningNameInput by remember { mutableStateOf("") }
+    var renameSigningTarget by remember { mutableStateOf<SigningProfile?>(null) }
+    var renameSigningNameInput by remember { mutableStateOf("") }
     var frostKeepClasses by remember { mutableStateOf(prefs.getBoolean("frost_keep_classes", false)) }
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
@@ -521,6 +523,23 @@ fun MainScreen() {
         )
     }
 
+    // 代码混淆功能项（与加固/保护同级的独立功能，各开关独立、互不包含）
+    val obfuscationItems = remember {
+        mutableStateListOf(
+            MutableFeatureItem("字符串加密", "obfuscation", Icons.Default.AutoAwesome, isSelected = frostStringEncrypt),
+            MutableFeatureItem("类顺序打乱", "obfuscation", Icons.Default.Shuffle, isSelected = frostClassShuffle),
+            MutableFeatureItem("DEX头部混淆", "obfuscation", Icons.Default.Code, isSelected = frostDexHeaderObfuscation),
+            MutableFeatureItem("移除Debug信息", "obfuscation", Icons.Default.Delete, isSelected = frostDebugRemoval),
+            MutableFeatureItem("Goto插入混淆", "obfuscation", Icons.Default.South, isSelected = frostGotoInsertion),
+            MutableFeatureItem("算术混淆", "obfuscation", Icons.Default.Calculate, isSelected = frostArithmeticObfuscation),
+            MutableFeatureItem("控制流混淆", "obfuscation", Icons.Default.Router, isSelected = frostControlFlow),
+            MutableFeatureItem("调用间接化", "obfuscation", Icons.Default.Call, isSelected = frostCallIndirection),
+            MutableFeatureItem("方法重载混淆", "obfuscation", Icons.Default.Layers, isSelected = frostMethodOverload),
+            MutableFeatureItem("字段重命名", "obfuscation", Icons.Default.Edit, isSelected = frostFieldRename),
+            MutableFeatureItem("类重命名", "obfuscation", Icons.Default.DriveFileRenameOutline, isSelected = frostClassRename)
+        )
+    }
+
     fun addLog(message: String, type: LogType = LogType.INFO) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         val newLog = LogEntry(time, message, type)
@@ -532,6 +551,85 @@ fun MainScreen() {
 
     fun addDetail(message: String) {
         if (verboseLogs) addLog(message, LogType.INFO)
+    }
+
+    fun buildCurrentConfigText(): String {
+        val sb = StringBuilder()
+        sb.appendLine("== 加固工具配置导出 ==")
+        sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+        sb.appendLine("版本: 9.10.27 (versionCode 69)")
+        sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
+        sb.appendLine()
+        sb.appendLine("[引擎]")
+        sb.appendLine("useFrostEngine=${useFrostEngine}")
+        sb.appendLine("keepClasses=${frostKeepClasses}")
+        sb.appendLine("smaller=${frostSmaller}")
+        sb.appendLine("verifySign=${frostVerifySign}")
+        sb.appendLine("soRandomization=${frostSoRandomization}")
+        sb.appendLine("disguise=${if (frostDisguiseEnabled) frostDisguiseName else "关"}")
+        sb.appendLine("excludedAbi=${if (frostExcludedAbi.isEmpty()) "无" else frostExcludedAbi.joinToString(",")}")
+        sb.appendLine("outputDir=${if (outputDirCustom.isNullOrBlank()) "默认" else outputDirCustom}")
+        sb.appendLine("timestampedOutput=${timestampedOutput}")
+        sb.appendLine("autoVerify=${autoVerify}")
+        sb.appendLine()
+        sb.appendLine("[加固项]")
+        sb.appendLine(hardeningItems.joinToString("、") { (if (it.isSelected) "✓" else "✗") + it.name })
+        sb.appendLine("[保护项]")
+        sb.appendLine(protectionItems.joinToString("、") { (if (it.isSelected) "✓" else "✗") + it.name })
+        sb.appendLine()
+        sb.appendLine("[代码混淆]")
+        sb.appendLine("stringEncrypt=${frostStringEncrypt} (minLen=${frostStringEncryptMinLen})")
+        sb.appendLine("classShuffle=${frostClassShuffle}")
+        sb.appendLine("dexHeader=${frostDexHeaderObfuscation}")
+        sb.appendLine("debugRemoval=${frostDebugRemoval}")
+        sb.appendLine("gotoInsertion=${frostGotoInsertion}")
+        sb.appendLine("arithmetic=${frostArithmeticObfuscation}")
+        sb.appendLine("controlFlow=${frostControlFlow}")
+        sb.appendLine("callIndirection=${frostCallIndirection}")
+        sb.appendLine("methodOverload=${frostMethodOverload}")
+        sb.appendLine("fieldRename=${frostFieldRename}")
+        sb.appendLine("classRename=${frostClassRename}")
+        sb.appendLine("methodFilter=${if (frostMethodFilterEnabled) "开(${frostMethodFilterRules.lineSequence().filter { it.isNotBlank() }.count()}条规则)" else "关"}")
+        sb.appendLine("dictGroups=${dictEnabledGroups.sorted().joinToString(",")}")
+        sb.appendLine("dictComplexity=${dictComplexity} count=${dictCountText}")
+        sb.appendLine("dictCustomUnicode=${dictUseCustomUnicode}(${dictUnicodeStartText}-${dictUnicodeEndText})")
+        sb.appendLine("dictCustomSymbols=${dictUseCustomSymbols}")
+        sb.appendLine()
+        sb.appendLine("[签名]")
+        sb.appendLine("signEnabled=${signEnabled}")
+        sb.appendLine("keystore=${if (signKeystorePath.isNotBlank()) (signKeystoreDisplayName.ifBlank { File(signKeystorePath).name }) else "(默认调试keystore)"}")
+        sb.appendLine("alias=${if (signAlias.isBlank()) "(自动)" else signAlias}")
+        sb.appendLine("storePass=${if (signStorePass.isBlank()) "(空)" else "****"}")
+        sb.appendLine("keyPass=${if (signKeyPass.isBlank()) "(空)" else "****"}")
+        sb.appendLine("savedSignings=${savedSignings.joinToString("、") { it.name }}")
+        return sb.toString()
+    }
+
+    fun syncObfuscationState(): Unit {
+        obfuscationItems.getOrNull(0)?.let { frostStringEncrypt = it.isSelected }
+        obfuscationItems.getOrNull(1)?.let { frostClassShuffle = it.isSelected }
+        obfuscationItems.getOrNull(2)?.let { frostDexHeaderObfuscation = it.isSelected }
+        obfuscationItems.getOrNull(3)?.let { frostDebugRemoval = it.isSelected }
+        obfuscationItems.getOrNull(4)?.let { frostGotoInsertion = it.isSelected }
+        obfuscationItems.getOrNull(5)?.let { frostArithmeticObfuscation = it.isSelected }
+        obfuscationItems.getOrNull(6)?.let { frostControlFlow = it.isSelected }
+        obfuscationItems.getOrNull(7)?.let { frostCallIndirection = it.isSelected }
+        obfuscationItems.getOrNull(8)?.let { frostMethodOverload = it.isSelected }
+        obfuscationItems.getOrNull(9)?.let { frostFieldRename = it.isSelected }
+        obfuscationItems.getOrNull(10)?.let { frostClassRename = it.isSelected }
+        prefs.edit()
+            .putBoolean("frost_string_encrypt", frostStringEncrypt)
+            .putBoolean("frost_class_shuffle", frostClassShuffle)
+            .putBoolean("frost_dex_header_obfuscation", frostDexHeaderObfuscation)
+            .putBoolean("frost_debug_removal", frostDebugRemoval)
+            .putBoolean("frost_goto_insertion", frostGotoInsertion)
+            .putBoolean("frost_arithmetic_obfuscation", frostArithmeticObfuscation)
+            .putBoolean("frost_control_flow", frostControlFlow)
+            .putBoolean("frost_call_indirection", frostCallIndirection)
+            .putBoolean("frost_method_overload", frostMethodOverload)
+            .putBoolean("frost_field_rename", frostFieldRename)
+            .putBoolean("frost_class_rename", frostClassRename)
+            .apply()
     }
 
     val enableSoRandomization: (Boolean) -> Unit = { enabled ->
@@ -608,6 +706,24 @@ fun MainScreen() {
                         .putString("sign_keystore_path", target.absolutePath)
                         .putString("sign_keystore_display_name", safeName)
                         .apply()
+                    // 自动保存为签名预设（以文件名命名，alias/密码跟随当前值），便于切换与重命名
+                    val currentName = signKeystoreDisplayName.ifBlank { File(signKeystorePath).name }
+                    val existing = savedSignings.firstOrNull {
+                        it.keystorePath == target.absolutePath
+                    }
+                    if (existing == null) {
+                        val profile = SigningProfile(
+                            name = currentName,
+                            keystorePath = target.absolutePath,
+                            alias = signAlias,
+                            storePass = signStorePass,
+                            keyPass = signKeyPass
+                        )
+                        val updated = savedSignings + profile
+                        savedSignings = updated
+                        saveSigningProfiles(prefs, updated)
+                        addLog("已自动保存签名预设: $currentName", LogType.INFO)
+                    }
                     addLog("已选择签名keystore: $safeName", LogType.SUCCESS)
                 } else {
                     addLog("keystore文件读取失败", LogType.WARNING)
@@ -1064,12 +1180,27 @@ fun MainScreen() {
                                 )
                             }
                             Spacer(Modifier.width(8.dp))
-                            Switch(
-                                checked = frostStringEncrypt,
-                                onCheckedChange = {
-                                    frostStringEncrypt = it
-                                    prefs.edit().putBoolean("frost_string_encrypt", it).apply()
+                            val obfSelectedCount = obfuscationItems.count { it.isSelected }
+                            if (obfSelectedCount > 0) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        "$obfSelectedCount",
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            Icon(
+                                if (codeObfExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                         if (codeObfExpanded) {
@@ -1112,107 +1243,32 @@ fun MainScreen() {
                                     )
                                 }
                                 Spacer(Modifier.height(6.dp))
-                                Text("代码混淆 (DEX pass)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                                SettingRow(
-                                    icon = Icons.Default.Shuffle,
-                                    title = "类顺序打乱",
-                                    subtitle = "随机重排类定义 (class-shuffle)",
-                                    checked = frostClassShuffle,
-                                    onCheckedChange = {
-                                        frostClassShuffle = it
-                                        prefs.edit().putBoolean("frost_class_shuffle", it).apply()
+                                Text("DEX pass 混淆（点击切换，互不影响）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(6.dp))
+                                obfuscationItems.chunked(2).forEach { rowItems ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        rowItems.forEach { item ->
+                                            FeatureChip(
+                                                item = item,
+                                                modifier = Modifier.weight(1f),
+                                                accentColor = MaterialTheme.colorScheme.tertiary
+                                            )
+                                        }
+                                        repeat(2 - rowItems.size) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
                                     }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.Code,
-                                    title = "DEX 头部混淆",
-                                    subtitle = "填充 header 并重算 SHA-1/Adler32 (dex-header)",
-                                    checked = frostDexHeaderObfuscation,
-                                    onCheckedChange = {
-                                        frostDexHeaderObfuscation = it
-                                        prefs.edit().putBoolean("frost_dex_header_obfuscation", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.Delete,
-                                    title = "移除 Debug 信息",
-                                    subtitle = "剥离行号/局部变量 (debug-removal)",
-                                    checked = frostDebugRemoval,
-                                    onCheckedChange = {
-                                        frostDebugRemoval = it
-                                        prefs.edit().putBoolean("frost_debug_removal", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.South,
-                                    title = "Goto 插入混淆",
-                                    subtitle = "方法头插入无意义 goto 跳转 (goto-insertion)",
-                                    checked = frostGotoInsertion,
-                                    onCheckedChange = {
-                                        frostGotoInsertion = it
-                                        prefs.edit().putBoolean("frost_goto_insertion", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.Calculate,
-                                    title = "算术混淆",
-                                    subtitle = "ADD_INT 等价序列替换 + 假分支 (arithmetic)",
-                                    checked = frostArithmeticObfuscation,
-                                    onCheckedChange = {
-                                        frostArithmeticObfuscation = it
-                                        prefs.edit().putBoolean("frost_arithmetic_obfuscation", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.Router,
-                                    title = "控制流混淆",
-                                    subtitle = "方法头部拓宽与 goto 干扰 (control-flow)",
-                                    checked = frostControlFlow,
-                                    onCheckedChange = {
-                                        frostControlFlow = it
-                                        prefs.edit().putBoolean("frost_control_flow", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.Call,
-                                    title = "调用间接化",
-                                    subtitle = "方法入口注入间接跳转 (call-indirection)",
-                                    checked = frostCallIndirection,
-                                    onCheckedChange = {
-                                        frostCallIndirection = it
-                                        prefs.edit().putBoolean("frost_call_indirection", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.Layers,
-                                    title = "方法重载混淆",
-                                    subtitle = "注入同签名 dummy 方法 (method-overload)",
-                                    checked = frostMethodOverload,
-                                    onCheckedChange = {
-                                        frostMethodOverload = it
-                                        prefs.edit().putBoolean("frost_method_overload", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.DriveFileRenameOutline,
-                                    title = "字段重命名",
-                                    subtitle = "非敏感字段随机改名，引用精确重映射 (field-rename)",
-                                    checked = frostFieldRename,
-                                    onCheckedChange = {
-                                        frostFieldRename = it
-                                        prefs.edit().putBoolean("frost_field_rename", it).apply()
-                                    }
-                                )
-                                SettingRow(
-                                    icon = Icons.Default.Category,
-                                    title = "类重命名",
-                                    subtitle = "跨 dex 全局类名随机化，引用/字符串反射保护同步重映射 (class-rename)",
-                                    checked = frostClassRename,
-                                    onCheckedChange = {
-                                        frostClassRename = it
-                                        prefs.edit().putBoolean("frost_class_rename", it).apply()
-                                    }
-                                )
+                                    Spacer(Modifier.height(3.dp))
+                                }
+                                // 同步 chip 选择到 frost 开关与持久化
+                                LaunchedEffect(
+                                    obfuscationItems.map { it.isSelected }.joinToString(",")
+                                ) {
+                                    syncObfuscationState()
+                                }
                                 Spacer(Modifier.height(6.dp))
                             }
                         }
@@ -1391,6 +1447,39 @@ fun MainScreen() {
                         Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("开始加固", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val cfg = buildCurrentConfigText()
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("hardening_config", cfg))
+                            addLog("已复制当前启用配置 (${cfg.length} 字符)", LogType.SUCCESS)
+                        },
+                        modifier = Modifier.weight(1f).height(40.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("复制配置", fontSize = 13.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val logText = logs.joinToString("\n") { "[${it.time}] ${it.message}" }
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("log", logText))
+                            addLog("已复制处理日志 (${logText.length} 字符)", LogType.INFO)
+                        },
+                        modifier = Modifier.weight(1f).height(40.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("复制日志", fontSize = 13.sp)
                     }
                 }
 
@@ -2314,6 +2403,19 @@ fun MainScreen() {
                                             }
                                             IconButton(
                                                 onClick = {
+                                                    renameSigningTarget = profile
+                                                    renameSigningNameInput = profile.name
+                                                }
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Edit,
+                                                    contentDescription = "重命名",
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
                                                     val updated = savedSignings.filterNot { it.name == profile.name }
                                                     runCatching { File(profile.keystorePath).delete() }
                                                     savedSignings = updated
@@ -2729,6 +2831,58 @@ fun MainScreen() {
             },
             dismissButton = {
                 TextButton(onClick = { showSaveSigningDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    renameSigningTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { renameSigningTarget = null },
+            title = { Text("重命名签名预设") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "仅修改用于分辨的显示名称，不影响 keystore/别名/密码。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = renameSigningNameInput,
+                        onValueChange = { renameSigningNameInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("显示名称") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val newName = renameSigningNameInput.trim()
+                        if (newName.isEmpty()) {
+                            addLog("显示名称不能为空", LogType.WARNING)
+                            return@TextButton
+                        }
+                        if (savedSignings.any { it.name == newName && it.name != target.name }) {
+                            addLog("已有同名签名预设: $newName", LogType.WARNING)
+                            return@TextButton
+                        }
+                        val updated = savedSignings.map {
+                            if (it == target) it.copy(name = newName) else it
+                        }
+                        savedSignings = updated
+                        saveSigningProfiles(prefs, updated)
+                        addLog("已重命名签名预设: ${target.name} → $newName", LogType.SUCCESS)
+                        renameSigningTarget = null
+                    }
+                ) {
+                    Text("重命名")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameSigningTarget = null }) {
                     Text("取消")
                 }
             }
