@@ -64,6 +64,76 @@ private val CONFIG_VERSION: String = BuildConfig.VERSION_NAME
 data class LogEntry(val time: String, val message: String, val type: LogType)
 enum class LogType { INFO, SUCCESS, WARNING, ERROR }
 
+/**
+ * 加固历史记录：每次加固完成后保存「配置 + 日志」合一条记录，
+ * 支持查询、复制、删除与一键重新使用配置。
+ */
+private const val HISTORY_DIR_NAME = "hardening_history"
+private const val HISTORY_MAX_KEEP = 30
+
+private data class HardeningHistory(
+    val id: String,
+    val time: String,
+    val apkName: String,
+    val success: Boolean,
+    val configText: String,
+    val logText: String,
+    val stateJson: String
+)
+
+private fun saveHardeningHistory(context: Context, record: HardeningHistory) {
+    runCatching {
+        val dir = File(context.filesDir, HISTORY_DIR_NAME)
+        if (!dir.exists()) dir.mkdirs()
+        val jo = org.json.JSONObject()
+        jo.put("time", record.time)
+        jo.put("apk", record.apkName)
+        jo.put("success", record.success)
+        jo.put("config", record.configText)
+        jo.put("log", record.logText)
+        jo.put("state", record.stateJson)
+        File(dir, "${record.id}.json").writeText(jo.toString())
+        val all = listHardeningHistory(context)
+        if (all.size > HISTORY_MAX_KEEP) {
+            all.drop(HISTORY_MAX_KEEP).forEach { old ->
+                File(dir, "${old.id}.json").delete()
+            }
+        }
+    }
+}
+
+private fun listHardeningHistory(context: Context): List<HardeningHistory> {
+    val dir = File(context.filesDir, HISTORY_DIR_NAME)
+    if (!dir.exists()) return emptyList()
+    return dir.listFiles { f -> f.name.endsWith(".json") }
+        ?.sortedByDescending { it.name }
+        ?.mapNotNull { readHardeningHistory(context, it.name.removeSuffix(".json")) }
+        ?: emptyList()
+}
+
+private fun readHardeningHistory(context: Context, id: String): HardeningHistory? {
+    return try {
+        val f = File(File(context.filesDir, HISTORY_DIR_NAME), "$id.json")
+        if (!f.exists()) return null
+        val o = org.json.JSONObject(f.readText())
+        HardeningHistory(
+            id = id,
+            time = o.optString("time", ""),
+            apkName = o.optString("apk", ""),
+            success = o.optBoolean("success", false),
+            configText = o.optString("config", ""),
+            logText = o.optString("log", ""),
+            stateJson = o.optString("state", "")
+        )
+    } catch (e: Exception) {
+        null
+    }
+}
+
+private fun deleteHardeningHistory(context: Context, id: String) {
+    runCatching { File(File(context.filesDir, HISTORY_DIR_NAME), "$id.json").delete() }
+}
+
 class MutableFeatureItem(val name: String, val category: String, val icon: ImageVector, isSelected: Boolean = true) {
     var isSelected by mutableStateOf(isSelected)
 }
@@ -389,6 +459,10 @@ fun MainScreen() {
     var showSignConvertDialog by remember { mutableStateOf(false) }
     var signConvertTarget by remember { mutableStateOf<SigningProfile?>(null) }
     var signConvertFormat by remember { mutableStateOf("BKS") }
+    var showHistoryDialog by remember { mutableStateOf(false) }
+    var historyRecords by remember { mutableStateOf(listOf<HardeningHistory>()) }
+    var historySelectedId by remember { mutableStateOf<String?>(null) }
+    var historyQuery by remember { mutableStateOf("") }
     var signConvertPass by remember { mutableStateOf("") }
     var signConvertSetActive by remember { mutableStateOf(true) }
     var signConvertInfo by remember { mutableStateOf<com.adfxcbnm.hardeningtool.SigningTool.KeystoreInfo?>(null) }
@@ -599,11 +673,38 @@ fun MainScreen() {
         return name
     }
 
+    fun syncObfuscationState(): Unit {
+        obfuscationItems.getOrNull(0)?.let { frostStringEncrypt = it.isSelected }
+        obfuscationItems.getOrNull(1)?.let { frostClassShuffle = it.isSelected }
+        obfuscationItems.getOrNull(2)?.let { frostDexHeaderObfuscation = it.isSelected }
+        obfuscationItems.getOrNull(3)?.let { frostDebugRemoval = it.isSelected }
+        obfuscationItems.getOrNull(4)?.let { frostGotoInsertion = it.isSelected }
+        obfuscationItems.getOrNull(5)?.let { frostArithmeticObfuscation = it.isSelected }
+        obfuscationItems.getOrNull(6)?.let { frostControlFlow = it.isSelected }
+        obfuscationItems.getOrNull(7)?.let { frostCallIndirection = it.isSelected }
+        obfuscationItems.getOrNull(8)?.let { frostMethodOverload = it.isSelected }
+        obfuscationItems.getOrNull(9)?.let { frostFieldRename = it.isSelected }
+        obfuscationItems.getOrNull(10)?.let { frostClassRename = it.isSelected }
+        prefs.edit()
+            .putBoolean("frost_string_encrypt", frostStringEncrypt)
+            .putBoolean("frost_class_shuffle", frostClassShuffle)
+            .putBoolean("frost_dex_header_obfuscation", frostDexHeaderObfuscation)
+            .putBoolean("frost_debug_removal", frostDebugRemoval)
+            .putBoolean("frost_goto_insertion", frostGotoInsertion)
+            .putBoolean("frost_arithmetic_obfuscation", frostArithmeticObfuscation)
+            .putBoolean("frost_control_flow", frostControlFlow)
+            .putBoolean("frost_call_indirection", frostCallIndirection)
+            .putBoolean("frost_method_overload", frostMethodOverload)
+            .putBoolean("frost_field_rename", frostFieldRename)
+            .putBoolean("frost_class_rename", frostClassRename)
+            .apply()
+    }
+
     fun buildCurrentConfigText(): String {
         val sb = StringBuilder()
         sb.appendLine("== 加固工具配置导出 ==")
         sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-        sb.appendLine("版本: 9.10.28 (versionCode 70)")
+        sb.appendLine("版本: 9.10.29 (versionCode 71)")
         sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
         sb.appendLine()
         sb.appendLine("[引擎]")
@@ -651,31 +752,166 @@ fun MainScreen() {
         return sb.toString()
     }
 
-    fun syncObfuscationState(): Unit {
-        obfuscationItems.getOrNull(0)?.let { frostStringEncrypt = it.isSelected }
-        obfuscationItems.getOrNull(1)?.let { frostClassShuffle = it.isSelected }
-        obfuscationItems.getOrNull(2)?.let { frostDexHeaderObfuscation = it.isSelected }
-        obfuscationItems.getOrNull(3)?.let { frostDebugRemoval = it.isSelected }
-        obfuscationItems.getOrNull(4)?.let { frostGotoInsertion = it.isSelected }
-        obfuscationItems.getOrNull(5)?.let { frostArithmeticObfuscation = it.isSelected }
-        obfuscationItems.getOrNull(6)?.let { frostControlFlow = it.isSelected }
-        obfuscationItems.getOrNull(7)?.let { frostCallIndirection = it.isSelected }
-        obfuscationItems.getOrNull(8)?.let { frostMethodOverload = it.isSelected }
-        obfuscationItems.getOrNull(9)?.let { frostFieldRename = it.isSelected }
-        obfuscationItems.getOrNull(10)?.let { frostClassRename = it.isSelected }
+    /** 导出当前全部配置为结构化 JSON，用于历史记录一键恢复。 */
+    fun buildCurrentStateJson(): String {
+        val j = org.json.JSONObject()
+        j.put("useFrostEngine", useFrostEngine)
+        j.put("frostKeepClasses", frostKeepClasses)
+        j.put("frostSmaller", frostSmaller)
+        j.put("frostVerifySign", frostVerifySign)
+        j.put("frostSoRandomization", frostSoRandomization)
+        j.put("frostDisguiseEnabled", frostDisguiseEnabled)
+        j.put("frostDisguiseName", frostDisguiseName)
+        j.put("frostExcludedAbi", org.json.JSONArray(frostExcludedAbi.toList()))
+        j.put("timestampedOutput", timestampedOutput)
+        j.put("autoVerify", autoVerify)
+        j.put("signEnabled", signEnabled)
+        j.put("signKeystorePath", signKeystorePath)
+        j.put("signKeystoreDisplayName", signKeystoreDisplayName)
+        j.put("signAlias", signAlias)
+        j.put("signStorePass", signStorePass)
+        j.put("signKeyPass", signKeyPass)
+        j.put("frostStringEncrypt", frostStringEncrypt)
+        j.put("frostStringEncryptMinLen", frostStringEncryptMinLen)
+        j.put("frostClassShuffle", frostClassShuffle)
+        j.put("frostDexHeaderObfuscation", frostDexHeaderObfuscation)
+        j.put("frostDebugRemoval", frostDebugRemoval)
+        j.put("frostGotoInsertion", frostGotoInsertion)
+        j.put("frostArithmeticObfuscation", frostArithmeticObfuscation)
+        j.put("frostControlFlow", frostControlFlow)
+        j.put("frostCallIndirection", frostCallIndirection)
+        j.put("frostMethodOverload", frostMethodOverload)
+        j.put("frostFieldRename", frostFieldRename)
+        j.put("frostClassRename", frostClassRename)
+        j.put("frostMethodFilterEnabled", frostMethodFilterEnabled)
+        j.put("frostMethodFilterRules", frostMethodFilterRules)
+        j.put("dictEnabledGroups", org.json.JSONArray(dictEnabledGroups.sorted().map { it }))
+        j.put("dictComplexity", dictComplexity)
+        j.put("dictCountText", dictCountText)
+        j.put("dictMinLenText", dictMinLenText)
+        j.put("dictMaxLenText", dictMaxLenText)
+        j.put("dictUseCustomUnicode", dictUseCustomUnicode)
+        j.put("dictUnicodeStartText", dictUnicodeStartText)
+        j.put("dictUnicodeEndText", dictUnicodeEndText)
+        j.put("dictUseCustomSymbols", dictUseCustomSymbols)
+        j.put("dictSymbolsText", dictSymbolsText)
+        j.put("hardeningSel", org.json.JSONArray(hardeningItems.filter { it.isSelected }.map { it.name }))
+        j.put("protectionSel", org.json.JSONArray(protectionItems.filter { it.isSelected }.map { it.name }))
+        j.put("obfuscationSel", org.json.JSONArray(obfuscationItems.filter { it.isSelected }.map { it.name }))
+        return j.toString()
+    }
+
+    /** 从历史记录 JSON 快照恢复全部配置（含持久化）。 */
+    fun applyStateJson(raw: String) {
+        if (raw.isBlank()) return
+        val j = try { org.json.JSONObject(raw) } catch (e: Exception) { return }
+
+        useFrostEngine = j.optBoolean("useFrostEngine", useFrostEngine)
+        frostKeepClasses = j.optBoolean("frostKeepClasses", frostKeepClasses)
+        frostSmaller = j.optBoolean("frostSmaller", frostSmaller)
+        frostVerifySign = j.optBoolean("frostVerifySign", frostVerifySign)
+        frostSoRandomization = j.optBoolean("frostSoRandomization", frostSoRandomization)
+        frostDisguiseEnabled = j.optBoolean("frostDisguiseEnabled", frostDisguiseEnabled)
+        frostDisguiseName = j.optString("frostDisguiseName", frostDisguiseName)
+        timestampedOutput = j.optBoolean("timestampedOutput", timestampedOutput)
+        autoVerify = j.optBoolean("autoVerify", autoVerify)
+        signEnabled = j.optBoolean("signEnabled", signEnabled)
+        signKeystorePath = j.optString("signKeystorePath", signKeystorePath)
+        signKeystoreDisplayName = j.optString("signKeystoreDisplayName", signKeystoreDisplayName)
+        signAlias = j.optString("signAlias", signAlias)
+        signStorePass = j.optString("signStorePass", signStorePass)
+        signKeyPass = j.optString("signKeyPass", signKeyPass)
+        frostStringEncrypt = j.optBoolean("frostStringEncrypt", frostStringEncrypt)
+        frostStringEncryptMinLen = j.optInt("frostStringEncryptMinLen", frostStringEncryptMinLen)
+        frostClassShuffle = j.optBoolean("frostClassShuffle", frostClassShuffle)
+        frostDexHeaderObfuscation = j.optBoolean("frostDexHeaderObfuscation", frostDexHeaderObfuscation)
+        frostDebugRemoval = j.optBoolean("frostDebugRemoval", frostDebugRemoval)
+        frostGotoInsertion = j.optBoolean("frostGotoInsertion", frostGotoInsertion)
+        frostArithmeticObfuscation = j.optBoolean("frostArithmeticObfuscation", frostArithmeticObfuscation)
+        frostControlFlow = j.optBoolean("frostControlFlow", frostControlFlow)
+        frostCallIndirection = j.optBoolean("frostCallIndirection", frostCallIndirection)
+        frostMethodOverload = j.optBoolean("frostMethodOverload", frostMethodOverload)
+        frostFieldRename = j.optBoolean("frostFieldRename", frostFieldRename)
+        frostClassRename = j.optBoolean("frostClassRename", frostClassRename)
+        frostMethodFilterEnabled = j.optBoolean("frostMethodFilterEnabled", frostMethodFilterEnabled)
+        frostMethodFilterRules = j.optString("frostMethodFilterRules", frostMethodFilterRules)
+        dictComplexity = j.optInt("dictComplexity", dictComplexity)
+        dictCountText = j.optString("dictCountText", dictCountText)
+        dictMinLenText = j.optString("dictMinLenText", dictMinLenText)
+        dictMaxLenText = j.optString("dictMaxLenText", dictMaxLenText)
+        dictUseCustomUnicode = j.optBoolean("dictUseCustomUnicode", dictUseCustomUnicode)
+        dictUnicodeStartText = j.optString("dictUnicodeStartText", dictUnicodeStartText)
+        dictUnicodeEndText = j.optString("dictUnicodeEndText", dictUnicodeEndText)
+        dictUseCustomSymbols = j.optBoolean("dictUseCustomSymbols", dictUseCustomSymbols)
+        dictSymbolsText = j.optString("dictSymbolsText", dictSymbolsText)
+
+        runCatching {
+            val abi = mutableSetOf<String>()
+            j.optJSONArray("frostExcludedAbi")?.let { arr ->
+                for (i in 0 until arr.length()) abi.add(arr.getString(i))
+            }
+            frostExcludedAbi = abi
+        }
+        runCatching {
+            val groups = mutableSetOf<Int>()
+            j.optJSONArray("dictEnabledGroups")?.let { arr ->
+                for (i in 0 until arr.length()) groups.add(arr.getInt(i))
+            }
+            dictEnabledGroups = groups
+        }
+        // 同步 items 选中状态
+        runCatching {
+            val hs = j.optJSONArray("hardeningSel")?.let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }.toSet()
+            } ?: emptySet()
+            hardeningItems.forEach { it.isSelected = hs.contains(it.name) }
+        }
+        runCatching {
+            val ps = j.optJSONArray("protectionSel")?.let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }.toSet()
+            } ?: emptySet()
+            protectionItems.forEach { it.isSelected = ps.contains(it.name) }
+        }
+        runCatching {
+            val os = j.optJSONArray("obfuscationSel")?.let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }.toSet()
+            } ?: emptySet()
+            obfuscationItems.forEach { it.isSelected = os.contains(it.name) }
+        }
+        syncObfuscationState()
+        // 持久化
         prefs.edit()
-            .putBoolean("frost_string_encrypt", frostStringEncrypt)
-            .putBoolean("frost_class_shuffle", frostClassShuffle)
-            .putBoolean("frost_dex_header_obfuscation", frostDexHeaderObfuscation)
-            .putBoolean("frost_debug_removal", frostDebugRemoval)
-            .putBoolean("frost_goto_insertion", frostGotoInsertion)
-            .putBoolean("frost_arithmetic_obfuscation", frostArithmeticObfuscation)
-            .putBoolean("frost_control_flow", frostControlFlow)
-            .putBoolean("frost_call_indirection", frostCallIndirection)
-            .putBoolean("frost_method_overload", frostMethodOverload)
-            .putBoolean("frost_field_rename", frostFieldRename)
-            .putBoolean("frost_class_rename", frostClassRename)
+            .putBoolean("use_frost_engine", useFrostEngine)
+            .putBoolean("frost_keep_classes", frostKeepClasses)
+            .putBoolean("frost_smaller", frostSmaller)
+            .putBoolean("frost_verify_sign", frostVerifySign)
+            .putBoolean("frost_so_randomization", frostSoRandomization)
+            .putBoolean("frost_disguise_enabled", frostDisguiseEnabled)
+            .putString("frost_disguise_name", frostDisguiseName)
+            .putStringSet("frost_excluded_abi", frostExcludedAbi)
+            .putBoolean("timestamped_output", timestampedOutput)
+            .putBoolean("auto_verify", autoVerify)
+            .putBoolean("sign_enabled", signEnabled)
+            .putString("sign_keystore_path", signKeystorePath)
+            .putString("sign_keystore_display_name", signKeystoreDisplayName)
+            .putString("sign_alias", signAlias)
+            .putString("sign_store_pass", signStorePass)
+            .putString("sign_key_pass", signKeyPass)
+            .putInt("frost_string_encrypt_min_len", frostStringEncryptMinLen)
+            .putBoolean("frost_method_filter_enabled", frostMethodFilterEnabled)
+            .putString("frost_method_filter_rules", frostMethodFilterRules)
+            .putString("dict_enabled_groups", dictEnabledGroups.sorted().joinToString(","))
+            .putInt("dict_complexity", dictComplexity)
+            .putInt("obfuscation_dict_count", dictCountText.toIntOrNull() ?: 3000)
+            .putInt("dict_min_len", dictMinLenText.toIntOrNull() ?: 4)
+            .putInt("dict_max_len", dictMaxLenText.toIntOrNull() ?: 12)
+            .putBoolean("dict_use_custom_unicode", dictUseCustomUnicode)
+            .putInt("dict_custom_unicode_start", dictUnicodeStartText.toIntOrNull(16) ?: 0)
+            .putInt("dict_custom_unicode_end", dictUnicodeEndText.toIntOrNull(16) ?: 0)
+            .putBoolean("dict_use_custom_symbols", dictUseCustomSymbols)
+            .putString("dict_custom_symbols", dictSymbolsText)
             .apply()
+        addLog("已从历史记录恢复配置", LogType.SUCCESS)
     }
 
     val enableSoRandomization: (Boolean) -> Unit = { enabled ->
@@ -1462,6 +1698,20 @@ fun MainScreen() {
                             resultMessage = if (result.success) "加固完成" else "加固失败"
                             resultPath = result.path
                             resultSize = result.sizeDiff
+                            // 保存历史记录（配置+日志合一，用于查询/复制/重新使用配置）
+                            runCatching {
+                                val record = HardeningHistory(
+                                    id = System.currentTimeMillis().toString(),
+                                    time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()),
+                                    apkName = selectedApkName ?: "unknown.apk",
+                                    success = result.success,
+                                    configText = buildCurrentConfigText(),
+                                    logText = logs.joinToString("\n") { "[${it.time}] ${it.message}" },
+                                    stateJson = buildCurrentStateJson()
+                                )
+                                saveHardeningHistory(context, record)
+                                historyRecords = listHardeningHistory(context)
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -1513,6 +1763,23 @@ fun MainScreen() {
                         Spacer(Modifier.width(4.dp))
                         Text("复制日志", fontSize = 13.sp)
                     }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        historyRecords = listHardeningHistory(context)
+                        historySelectedId = historyRecords.firstOrNull()?.id
+                        historyQuery = ""
+                        showHistoryDialog = true
+                    },
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("历史记录 (${historyRecords.size})", fontSize = 13.sp)
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -3140,6 +3407,172 @@ fun MainScreen() {
         )
     }
 
+    if (showHistoryDialog) {
+        AlertDialog(
+            onDismissRequest = { showHistoryDialog = false },
+            title = { Text("加固历史记录") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "每次加固自动保存「配置 + 日志」一条记录。可查询、复制，或一键恢复配置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = historyQuery,
+                        onValueChange = {
+                            historyQuery = it
+                            if (historySelectedId == null && historyRecords.isNotEmpty()) {
+                                historySelectedId = historyRecords.first().id
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("搜索 APK 名 / 时间，如 palm / 2026-09") },
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                    )
+                    if (historyRecords.isEmpty()) {
+                        Text(
+                            "暂无历史记录",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        val filtered = historyRecords.filter {
+                            historyQuery.isBlank() ||
+                                it.apkName.contains(historyQuery, ignoreCase = true) ||
+                                it.time.contains(historyQuery, ignoreCase = true) ||
+                                (if (historyQuery.contains("成功", ignoreCase = true)) it.success else false)
+                        }
+                        if (filtered.isEmpty()) {
+                            Text(
+                                "没有匹配的记录",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            // 记录列表
+                            LazyColumn(modifier = Modifier.fillMaxWidth().height(150.dp)) {
+                                items(filtered.size, key = { idx -> filtered[idx].id }) { idx ->
+                                    val rec = filtered[idx]
+                                    val selected = rec.id == historySelectedId
+                                    Surface(
+                                        color = if (selected) MaterialTheme.colorScheme.secondaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth().clickable {
+                                            historySelectedId = rec.id
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                if (rec.success) Icons.Default.CheckCircle else Icons.Default.Error,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp),
+                                                tint = if (rec.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                            )
+                                            Spacer(Modifier.width(6.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    rec.apkName,
+                                                    fontSize = 12.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    rec.time,
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                }
+                            }
+                            // 选中记录的详情（选中项被过滤掉时回退到首项）
+                            val safeSelectedId = historySelectedId?.takeIf { id -> filtered.any { it.id == id } }
+                            val rec = filtered.firstOrNull { it.id == safeSelectedId } ?: filtered.first()
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+                                    Text(
+                                        "${rec.apkName} · ${rec.time} · ${if (rec.success) "成功" else "失败"}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    val detail = "===== 配置 =====\n${rec.configText}\n\n===== 日志 =====\n${rec.logText}"
+                                    Text(
+                                        detail,
+                                        fontSize = 10.sp,
+                                        maxLines = 8,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("history_detail", detail))
+                                                addLog("已复制历史记录", LogType.SUCCESS)
+                                            },
+                                            modifier = Modifier.weight(1f).height(32.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("复制", fontSize = 11.sp)
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                historyRecords = historyRecords.filterNot { it.id == rec.id }
+                                                deleteHardeningHistory(context, rec.id)
+                                                historySelectedId = historyRecords.firstOrNull()?.id
+                                                addLog("已删除历史记录", LogType.INFO)
+                                            },
+                                            modifier = Modifier.weight(1f).height(32.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("删除", fontSize = 11.sp)
+                                        }
+                                        Button(
+                                            onClick = {
+                                                applyStateJson(rec.stateJson)
+                                                showHistoryDialog = false
+                                            },
+                                            modifier = Modifier.weight(1.4f).height(32.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("重新使用配置", fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showHistoryDialog = false }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+
     if (showSignInfoDialog) {
         AlertDialog(
             onDismissRequest = { showSignInfoDialog = false },
@@ -3563,10 +3996,19 @@ fun MainScreen() {
                                 val cn = signToolGenCn.trim().ifEmpty { "Android App" }
                                 val target = File(context.filesDir, "custom_sign_keystore.p12")
                                 val nb = signToolGenNotBefore.trim().let { if (it.isNotEmpty()) parseDateMillis(it) else null }
-                                val na = signToolGenNotAfter.trim().let { if (it.isNotEmpty()) parseDateMillis(it) else null }
-                                if (nb != null && na != null && na <= nb) {
+                                var na = signToolGenNotAfter.trim().let { if (it.isNotEmpty()) parseDateMillis(it) else null }
+                                val naRaw = signToolGenNotAfter.trim()
+                                if (naRaw.isNotEmpty() && na == null) {
+                                    signToolError = "到期日期格式无效（需 yyyy-MM-dd，且为真实存在的日期）"
+                                } else if (nb != null && na != null && na <= nb) {
                                     signToolError = "到期日期必须晚于生成日期"
                                 } else {
+                                    // X.509 标准上限 9999-12-31，超限钳制而非报错
+                                    val maxX509 = 253402300799999L
+                                    if (na != null && na > maxX509) {
+                                        na = maxX509
+                                        addLog("到期日期超过 X.509 上限（9999 年），已自动钳制为 9999-12-31", LogType.WARNING)
+                                    }
                                 val spec = com.adfxcbnm.hardeningtool.SigningTool.KeystoreSpec(
                                     alias, storePass, keyPass,
                                     signToolGenKeyAlg, signToolGenKeySize,
@@ -4399,10 +4841,25 @@ private fun InfoRow(label: String, value: String) {
 
 /** 解析 yyyy-MM-dd 为毫秒（本地时区当天 00:00），失败返回 null */
 private fun parseDateMillis(s: String): Long? {
+    // 支持 4 位标准年，也兼容 5 位年（如 10000-01-01），供 X.509 钳制逻辑处理
     return try {
-        val df = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-        df.isLenient = false
-        df.parse(s)?.time
+        val parts = s.trim().split("-")
+        if (parts.size != 3) return null
+        val year = parts[0].toIntOrNull() ?: return null
+        val month = parts[1].toIntOrNull() ?: return null
+        val day = parts[2].toIntOrNull() ?: return null
+        val cal = java.util.Calendar.getInstance()
+        cal.clear()
+        cal.set(year, month - 1, day, 0, 0, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        // 校验月/日合法性
+        if (cal.get(java.util.Calendar.YEAR) != year ||
+            cal.get(java.util.Calendar.MONTH) != month - 1 ||
+            cal.get(java.util.Calendar.DAY_OF_MONTH) != day
+        ) {
+            return null
+        }
+        cal.timeInMillis
     } catch (e: Exception) {
         null
     }

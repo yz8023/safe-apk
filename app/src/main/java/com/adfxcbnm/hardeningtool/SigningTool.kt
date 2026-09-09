@@ -26,6 +26,15 @@ import java.util.Locale
  */
 object SigningTool {
 
+    /** X.509 GeneralizedTime 年份上限 9999-12-31 23:59:59.999 UTC */
+    private val X509_MAX_NOT_AFTER: Long = run {
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        cal.clear()
+        cal.set(9999, java.util.Calendar.DECEMBER, 31, 23, 59, 59)
+        cal.set(java.util.Calendar.MILLISECOND, 999)
+        cal.timeInMillis
+    }
+
     private val providerRegistered = try {
         if (Security.getProvider("BC") == null) {
             Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
@@ -253,8 +262,12 @@ object SigningTool {
             val now = System.currentTimeMillis()
             val notBefore = spec.notBeforeMillis?.let { normalizeDateStart(it) }
                 ?: (now - 24 * 60 * 60 * 1000L)
-            val notAfter = spec.notAfterMillis?.let { normalizeDateEnd(it) }
+            var notAfter = spec.notAfterMillis?.let { normalizeDateEnd(it) }
                 ?: (now + spec.validityDays.toLong() * 24 * 60 * 60 * 1000L)
+            // X.509 GeneralizedTime 年份上限为 9999，超限钳制到 9999-12-31 23:59:59.999
+            if (notAfter > X509_MAX_NOT_AFTER) {
+                notAfter = X509_MAX_NOT_AFTER
+            }
 
             val isEc = spec.keyAlg.equals("EC", true)
             val subject = buildDN(spec)
@@ -531,10 +544,12 @@ object SigningTool {
     }
 
     private fun asn1Time(millis: Long): ByteArray {
+        var m = millis
+        if (m > X509_MAX_NOT_AFTER) m = X509_MAX_NOT_AFTER
         val year = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
-            .apply { timeInMillis = millis }.get(java.util.Calendar.YEAR)
+            .apply { timeInMillis = m }.get(java.util.Calendar.YEAR)
         // 2050 年后 UTCTime 只支持 2 位年，改用 GeneralizedTime
-        return if (year >= 2050) asn1GeneralizedTime(millis) else asn1UtcTime(millis)
+        return if (year >= 2050) asn1GeneralizedTime(m) else asn1UtcTime(m)
     }
 
     private fun asn1Null(): ByteArray = byteArrayOf(0x05, 0x00)
