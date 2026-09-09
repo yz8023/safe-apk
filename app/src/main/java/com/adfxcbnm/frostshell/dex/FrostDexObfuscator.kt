@@ -840,7 +840,7 @@ object FrostDexObfuscator {
             other is FieldKey && other.cls == cls && other.name == name && other.type == type
     }
 
-    fun applyFieldRename(dexFile: File): Boolean {
+    fun applyFieldRename(dexFile: File, protectedClasses: Set<String> = emptySet()): Boolean {
         val dex = try {
             DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
         } catch (e: Exception) {
@@ -862,15 +862,18 @@ object FrostDexObfuscator {
         for (cd in dex.classes) {
             if (com.adfxcbnm.frostshell.config.FrostProtectRules.matchRules(cd.type)) continue
             if (cd.type in nativeClasses) continue
+            if (isProtectedClass(cd.type, protectedClasses)) continue
             for (f in cd.fields) {
                 if (f.name == "serialVersionUID") continue
                 if (f.annotations.any()) continue
                 if ((f.accessFlags and 0x1000) != 0) continue
                 if ((f.accessFlags and 0x4000) != 0) continue
-                var newName = genRandomName(3 + random.nextInt(5))
+                var newName = com.adfxcbnm.frostshell.config.FrostNameDictionary.genFieldIdentifier(usedNames)
+                    ?: genRandomName(3 + random.nextInt(5))
                 var guard = 0
                 while (usedNames.contains(newName) && guard++ < 8) {
-                    newName = genRandomName(3 + random.nextInt(5))
+                    newName = com.adfxcbnm.frostshell.config.FrostNameDictionary.genFieldIdentifier(usedNames)
+                        ?: genRandomName(3 + random.nextInt(5))
                 }
                 usedNames.add(newName)
                 fieldMap[FieldKey(cd.type, f.name, f.type)] = newName
@@ -1089,6 +1092,17 @@ object FrostDexObfuscator {
             sb.append(NAME_CHARS_EXT[random.nextInt(NAME_CHARS_EXT.length)])
         }
         return sb.toString()
+    }
+
+    fun isProtectedClass(type: String, protectedClasses: Set<String>): Boolean {
+        for (p in protectedClasses) {
+            if (p.endsWith("/")) {
+                if (type.startsWith(p)) return true
+            } else if (type == p) {
+                return true
+            }
+        }
+        return false
     }
 
     // ===== 工具 =====

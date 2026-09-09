@@ -119,6 +119,8 @@ object FrostClassRenamer {
     }
 
     private fun genClassName(used: MutableSet<String>): String {
+        val dictName = com.adfxcbnm.frostshell.config.FrostNameDictionary.genClassIdentifier(used)
+        if (dictName != null) return dictName
         val segs = 2 + random.nextInt(3)
         val sb = StringBuilder("L")
         for (s in 0 until segs) {
@@ -461,61 +463,46 @@ object FrostClassRenamer {
     ): Map<String, String> {
         val loadable = dexFiles.filter { it.exists() && FrostDexUtils.getDexNumber(it.name) >= 0 }
 
-        // step1: 收集全量类类型，用于字符串引用保护判断
+        // 单次全量加载：step1 收集类型 + step2 收集字符串引用（反射类名）一次性完成，
+        // 避免对每个 dex 重复 loadDexFile（三次加载峰值内存为原来的约 3 倍，OOM 主要来源）。
         var protectedSet = HashSet(extraProtectedPrefixes)
-        var allTypes: Set<String>? = null
-        if (true) {
-            val types = LinkedHashSet<String>()
-            for (df in loadable) {
-                try {
-                    val dex = DexFileFactory.loadDexFile(df, Opcodes.getDefault())
-                    for (cd in dex.classes) types.add(cd.type)
-                } catch (e: Exception) {
-                    FrostLogUtils.warn("class rename: skip scan %s: %s", df.name, e.message)
-                }
-            }
-            allTypes = types
-        }
-        // step2: 扫描字符串常量（Class.forName 等反射路径），命中全量类则保护
+        val allTypes = LinkedHashSet<String>()
+        val stringCandidates = LinkedHashSet<String>()
         for (df in loadable) {
             try {
                 val dex = DexFileFactory.loadDexFile(df, Opcodes.getDefault())
                 for (cd in dex.classes) {
+                    allTypes.add(cd.type)
                     for (m in cd.methods) {
                         val impl = m.implementation ?: continue
                         for (insn in impl.instructions) {
                             if (insn !is ReferenceInstruction) continue
-                            val ref = insn.reference
-                            if (ref is StringReference) {
-                                val d = tryConvertToDescriptor(ref.string)
-                                if (d != null && allTypes!!.contains(d)) protectedSet.add(d)
+                            if (insn.reference is StringReference) {
+                                val d = tryConvertToDescriptor((insn.reference as StringReference).string)
+                                if (d != null) stringCandidates.add(d)
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                FrostLogUtils.warn("class rename: skip string scan %s: %s", df.name, e.message)
+                FrostLogUtils.warn("class rename: skip scan %s: %s", df.name, e.message)
             }
+        }
+        // 字符串引用命中全量类型说明该类型经反射路径访问，必须保护
+        for (candidate in stringCandidates) {
+            if (allTypes.contains(candidate)) protectedSet.add(candidate)
         }
 
         // step3: 全局分配新类名（跨 dex 唯一）
         val used = HashSet<String>()
         val classRenameMap = LinkedHashMap<String, String>()
         var totalRenamed = 0
-        for (df in loadable) {
-            try {
-                val dex = DexFileFactory.loadDexFile(df, Opcodes.getDefault())
-                for (cd in dex.classes) {
-                    val type = cd.type
-                    if (classRenameMap.containsKey(type)) continue
-                    if (!shouldRename(type, protectedSet)) continue
-                    val newName = genClassName(used)
-                    classRenameMap[type] = newName
-                    totalRenamed++
-                }
-            } catch (e: Exception) {
-                FrostLogUtils.warn("class rename: skip map %s: %s", df.name, e.message)
-            }
+        for (type in allTypes) {
+            if (classRenameMap.containsKey(type)) continue
+            if (!shouldRename(type, protectedSet)) continue
+            val newName = genClassName(used)
+            classRenameMap[type] = newName
+            totalRenamed++
         }
         if (totalRenamed > 0) {
             FrostLogUtils.info("class rename map built: %d classes", totalRenamed)

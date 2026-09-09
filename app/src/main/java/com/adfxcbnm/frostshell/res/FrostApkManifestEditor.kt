@@ -92,4 +92,20 @@ object FrostApkManifestEditor {
     fun getPackageName(file: String): String? {
         return getAttributeValue(file, "manifest", "android", "package")
     }
+
+    /**
+     * 收集 manifest 中所有组件引用的类全限定名（application/activity/alias/service/
+     * receiver/provider/instrumentation plus appComponentFactory）。
+     * 这些类对 class-rename 必须保护：被系统按清单名实例化，重命名不同步清单会启动崩溃。
+     * 返回 dex 描述符格式（"Lcom/foo/Bar;"）。相对名"."前缀按 package 前缀展开。
+     */
+    @JvmStatic
+    fun collectComponentClasses(file: String): Set<String> {
+        return try {
+            val data = FrostIoUtils.readFile(file)
+            if (data.isEmpty()) emptySet() else AndroidManifestModifier.collectComponentClasses(data)
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
 }
