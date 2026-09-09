@@ -511,8 +511,9 @@ object SigningTool {
     }
 
     private fun asn1PrintableString(value: String): ByteArray {
-        val bytes = value.toByteArray(Charsets.US_ASCII)
-        return byteArrayOf(0x13) + encodeAsn1Length(bytes.size) + bytes
+        val asciiPrintable = value.all { it.code in 0x20..0x7E }
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        return byteArrayOf(if (asciiPrintable) 0x13 else 0x0C) + encodeAsn1Length(bytes.size) + bytes
     }
 
     private fun asn1UtcTime(millis: Long): ByteArray {
