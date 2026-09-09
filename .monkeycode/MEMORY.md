@@ -36,33 +36,17 @@ Entries discovered by the Agent during task execution should follow this format:
 - Context: Discovered by Agent while performing FrostShell 与 ADFXCBNM 二合一加固合并任务的验证
 - Category: Environment Configuration
 - Instructions:
-  - 本环境（Debian 12 bookworm）默认无 Java，apt 源为清华镜像（mirrors.tuna.tsinghua.edu.cn），用 `apt-get install -y openjdk-17-jdk-headless` 安装 JDK 17 比 Temurin 直链下载快且可靠（Temurin github 下载常被截断）。
-  - FrostShell `protect.py --auto-setup` 内置的 Temurin JDK 21 下载在此网络环境易中断，改走 apt 更稳。
-
-[Project Knowledge Summary]
-- Date: 2026-08-30
-- Context: Discovered by Agent while performing FrostShell 二合一加固 merge_protection.py 验证
-- Category: Troubleshooting & Debugging
-- Instructions:
+  - 本环境（Debian 12 bookworm）默认无 Java，apt 源为清华镜像（mirrors.tuna.tsinghua.edu.cn），用 `apt-get install -y openjdk-17-jdk-headless` 安装 JDK 17 比 Temurin 直链下载快且可靠（Temurin github 下载常被截断；FrostShell `protect.py --auto-setup` 内置的 Temurin JDK 21 下载同样易中断）。
   - FrostShell 引擎（ironshell.jar）在 zipalign 后内部 apksig 签名可能失败，导致 `*_signed.apk` 为 0 字节，但 `*_unsign.apk` 有效；合并流程已回退使用 unsign 产物（merge 阶段会重新签名）。
   - apksig 验证报 "JAR signature ... not supported on API Level(s) 9-17" 是无 minSdk 的测试 APK 的误报，需加 `--min-sdk-version 21` 再验证。
 
 [Project Knowledge Summary]
-- Date: 2026-08-30
-- Context: Discovered by Agent while implementing merge_protection.py 的 ZipBuilder 手动重打包
+- Date: 2026-08-30 / 2026-09-05
+- Context: Discovered by Agent while implementing merge_protection.py ZipBuilder 手动重打包与 v9.10.0 assembleDebug 编译验证
 - Category: Build Methods
 - Instructions:
-  - 手写 ZIP 时，DEFLATED 条目必须用裸 deflate 流（`zlib.compressobj(6, zlib.DEFLATED, -15)`），不能用 `zlib.compress()`（带 zlib 头 0x789c 会导致 apksig/zipfile 解压失败）。
-  - ZipBuilder 写中央目录时必须递增 offset，否则 EOCD 的 cd_size 为 0 导致中央目录损坏。
-
-[Project Knowledge Summary]
-- Date: 2026-09-05
-- Context: Discovered by Agent while performing v9.10.0 崩溃修复的 assembleDebug 编译验证
-- Category: Build Methods
-- Instructions:
-  - 自定义 `ClassDef`/`DexFile` 实现（如 FrostReflectionClinitInjector 内的委托式 RewrittenClassDef/RewrittenDexFile）必须遵循 jar 内 dexlib2 的接口约束：`ClassDef` 经 `TypeReference` 间接实现 `CharSequence`，Kotlin 编译器会要求实现 `get(index: Int): Char`，因此自定义类应继承 `com.android.tools.smali.dexlib2.base.reference.BaseTypeReference` 而非裸实现 `ClassDef` 接口（jar 自带 RewrittenClassDef 即此模式）。
-  - jar 内 dexlib2 的 `getOpcodes()` 等在 Kotlin 侧为动态解析属性，`override val opcodes` 无法匹配，需用显式 `override fun getOpcodes()`。
-  - `Iterable.debugItems` 无 `isNotEmpty()`，用 `.any()` 判空。
+  - 手写 ZIP 时，DEFLATED 条目必须用裸 deflate 流（`zlib.compressobj(6, zlib.DEFLATED, -15)`），不能用 `zlib.compress()`（带 zlib 头 0x789c 会导致 apksig/zipfile 解压失败）。ZipBuilder 写中央目录时必须递增 offset，否则 EOCD 的 cd_size 为 0 导致中央目录损坏。
+  - 自定义 `ClassDef`/`DexFile` 实现必须遵循 jar 内 dexlib2 接口约束：`ClassDef` 经 `TypeReference` 间接实现 `CharSequence`，Kotlin 编译器会要求实现 `get(index: Int): Char`，因此应继承 `com.android.tools.smali.dexlib2.base.reference.BaseTypeReference` 而非裸实现接口；`getOpcodes()` 等在 Kotlin 侧为动态解析属性，需用显式 `override fun getOpcodes()`。`Iterable.debugItems` 无 `isNotEmpty()`，用 `.any()` 判空。
   - 编译命令：`cd /tmp/opencode/merge/android/AndroidHardeningTool && ./gradlew :app:assembleDebug --no-daemon --offline`；内存上限 3.5GiB(45%)，CPU 300%，约 47s-1m49s；产物校验用 `aapt dump badging app-debug.apk` 看 versionName/versionCode。
   - Jar 编译类路径（compileDebugKotlin 的 KCP）会引用 `app/libs/ironshell-deps.jar` 的 AGP transformed 快照（`ironshell-deps_jar-snapshot.bin`），其内容与源 jar 直接 javap 观察存在差异，排查接口签名异常时以「编译报错提示的成员」为准。
 
@@ -86,24 +70,16 @@ Entries discovered by the Agent during task execution should follow this format:
   - 复合场景下 meditor 产物在设备端（OPPO PLG110/Android 16/512MB 堆）表现出 appComponentFactory="activity" 等字符串错位；本地用完整 public.xml 时症状消失，佐证 public.xml 依赖是根因。
 
 [Project Knowledge Summary]
-- Date: 2026-09-05
-- Context: Discovered by Agent while diagnosing 加固产物启动闪退 VerifyError（onBackPressed target dex pc not at instruction start）
+- Date: 2026-09-05 / 2026-09-06
+- Context: Discovered by Agent while diagnosing 加固产物启动闪退（VerifyError onBackPressed + Undefined 两类，v9.10.4/v9.10.15）
 - Category: Troubleshooting & Debugging
 - Instructions:
-  - 根因：dex 改写 pass 用 `ImmutableMethodImplementation` 重建方法体时把 DexBacked 指令（保留原始 codeOffset）与新指令混拼，插入指令后方法指令流右移，但 goto/if/switch 仍引用原始偏移 → 跳转目标落在指令中间，ART verifier 拒绝加载（`VerifyError: void ...onBackPressed(): [0x15] target dex pc 0x28 is not at instruction start`）。dexlib2 的 `getCodeOffset()` 对 goto/if 是相对当前指令的偏移（target=指令起始+offset），对 switch/payload 是方法内绝对偏移。
-  - 修复范式：凡需在既有方法体内插入/替换指令，必须用 `MutableMethodImplementation(MethodImplementation)` 复制方法体（构造函数会把全部 offset 指令经 codeAddress→index 映射转 label 式 builder 指令，插入/替换后 `fixInstructions` 自动重算所有偏移），不可直接拼接 backed 指令；该构造函数还会保留 tryBlocks/debugItems（用 `mapCodeAddressToIndex` 重新映射）。`FrostStringEncryptor.rewriteMethod` 与 `FrostReflectionClinitInjector.injectHelperCall` 均已按此修复（v9.10.4）。
-  - 注意：`MutableMethodImplementation` 的 `registerCount` 是 `private final` 无 setter，需增寄存器时用匿名 `MethodImplementation` facade 覆盖 `getRegisterCount()` 透传 mutable 的 instructions/tryBlocks/debugItems（不可把 builder 指令抽出另包 Immutable，会丢 label 上下文）。
-  - 本地 dex 级回归验证：javac+d8 构造含分支/goto/packed-switch 的样例 dex，java -cp 直调 pass 后遍历所有 `OffsetInstruction`，检查 `target = 指令起始+getCodeOffset()`（goto/if）或 `getCodeOffset()`（switch）是否落在指令起始边界集合，等价 ART verifier 检查；运行时需 `android.util.Log` stub（编译后的 app classes 会引用 android.util.Log，driver classpath 前置 stubout）。
-
-[Project Knowledge Summary]
-- Date: 2026-09-06
-- Context: Discovered by Agent while diagnosing v9.10.4 后加固产物仍闪退（onBackPressed instance field access on non-reference type Undefined）
-- Category: Troubleshooting & Debugging
-- Instructions:
-  - Dalvik 调用约定：参数寄存器锚定在寄存器区最高位（指向受 instruction 索引，offset 不迁移）。因此「提升方法 registerCount 以容纳临时寄存器」时，参数寄存器整体上移，但方法内指令（iget/iput/invoke 等）对参数寄存器的原始编号引用不会跟随迁移 —— ART verifier 在入口把最高位寄存器标为参数类型，指令却读取原编号位置（现为无定义 local），报 `instance field access on object that has non-reference type Undefined`（onBackPressed 首条 iget 即 [0x0]）。
-  - 修复范式：需要在既有方法内新增临时寄存器时，除用 `MutableMethodImplementation(MethodImplementation)` 复制（自动 label 化+fixInstructions 重算偏移，解决跳转目标错位）外，还必须在方法头部插入「参数搬移」指令——从提升后的新参数区（regCount-totalSlots 起）逐槽位搬回原参数区（baseRegs-totalSlots 起），this/引用用 MOVE_OBJECT_16、宽类型 MOVE_WIDE_16、其余 MOVE_16（32x 格式 BuilderInstruction32x(dst,src)）；临时寄存器放在参数区之上的新增空间（不与既有引用冲突）；头部新增指令数会让后续 target 索引整体偏移需 +headShift。上限检查 newRegCount = baseRegs + 参数槽数 + 额外寄存器数 ≤ 0xFFFF。
-  - **参数搬移槽位顺序陷阱（v9.10.15 修复的闪退根因）**：搬移指令必须按 Dalvik 参数真实位序生成——实例方法 this 在最低参数位、其后显式参数按声明顺序。若把 `slotTypes` 构造成 `[显式参数..., Lthis;]` 再用 `slotTypes.indices.reversed()` 迭代（意图让 this 落低位），反序会让多参数方法的显式参数整体错位：如 `bar(String s, long l)` 生成 `MOVE_WIDE_16 v2<-v10`（把 s 当 long 读）+ `MOVE_OBJECT_16 v4<-v12`（把 l 低位当对象读），ART verifier 报类型错直接闪退；仅无参/单参方法（onBackPressed）恰巧正确，故 v9.10.5 样例未暴露。正确做法：`slotTypes` 直接按位序构造（`if(!isStatic) add("Lthis;")`，随后按参数声明顺序 add），正向迭代累加 pos（pos+=槽宽）算 dst=low+pos/src=baseRegs+4+pos，再倒序插入头部保持位序。回归用 javac+d8 构造 无参/2参/3参/宽首参(J,D,String)/5参(int,long,String,Object,char) 六种形状 + dexlib2 遍历指令核对 move 的 dst/src/opcode。
-  - dex 级双校验（等价 ART verifier）：① offset 指令目标（goto/if 相对=指令起始+offset，switch/payload 绝对=offset）落在指令起始边界；② 寄存器类型流——entry 参数区各槽位按参数类型标记（this/对象=引用），逐指令传播 MOVE/CONST String/invoke 结果/move-result，检查 iget/iput 对象寄存器与 AGET 数组寄存器必须为引用类型。用 javac+d8 构造 onBackPressed 分支形状、packed-switch、多参数（long+int+String+Object）样例验证。
+  - 根因①：dex 改写 pass 用 `ImmutableMethodImplementation` 重建方法体时把 DexBacked 指令（保留原始 codeOffset）与新指令混拼，插入指令后指令流右移但 goto/if/switch 仍引用原始偏移 → 跳转目标落在指令中间，ART 报 `VerifyError: target dex pc 0x28 is not at instruction start`。dexlib2 的 `getCodeOffset()` 对 goto/if 是相对当前指令的偏移（target=指令起始+offset），对 switch/payload 是方法内绝对偏移。
+  - 根因②：参数寄存器锚定在寄存器区最高位（不受 instruction 索引影响）。「提升 registerCount 以容纳临时寄存器」时参数寄存器整体上移，但方法内指令（iget/iput/invoke）对参数寄存器的原始编号引用不跟随迁移 → ART 报 `instance field access on object that has non-reference type Undefined`。
+  - 修复范式：凡需在既有方法体内插入/替换指令，必须用 `MutableMethodImplementation(MethodImplementation)` 复制方法体（构造时把全部 offset 指令经 codeAddress→index 映射转 label 式 builder 指令，插入/替换后 `fixInstructions` 自动重算偏移；保留 tryBlocks/debugItems）。`registerCount` 是 private final 无 setter，需增寄存器时用匿名 `MethodImplementation` facade 覆盖 `getRegisterCount()` 透传 mutable 的 instructions/tryBlocks/debugItems。
+  - 增寄存器的参数搬移：从提升后的新参数区（regCount-totalSlots 起）逐槽位移回原参数区（baseRegs-totalSlots 起），this/引用用 MOVE_OBJECT_16、宽类型 MOVE_WIDE_16、其余 MOVE_16（BuilderInstruction32x(dst,src)）；临时寄存器放参数区之上，头部新增指令数需 +headShift；newRegCount ≤ 0xFFFF。
+  - **参数搬移槽位顺序陷阱（v9.10.15 根因）**：搬移必须按 Dalvik 参数真实位序——实例方法 this 最低位、显式参数按声明顺序。`slotTypes` 应直接按位序构造（`if(!isStatic) add("Lthis;")` 再按参数顺序 add），正向迭代累加 pos（pos+=槽宽）算 dst=low+pos/src=baseRegs+4+pos，再倒序插入头部。用 `reversed()` 反序会让多参数显式参数错位（如 `bar(String s, long l)` 把 s 当 long 读），仅无参/单参方法恰巧正确故早期未暴露。
+  - dex 级双校验（等价 ART verifier）：① offset 指令目标（goto/if 相对=指令起始+offset，switch/payload 绝对=offset）落在指令起始边界；② 寄存器类型流——entry 参数区各槽位按参数类型标记，逐指令传播 MOVE/CONST String/invoke 结果/move-result，检查 iget/iput 对象寄存器与 AGET 数组寄存器必须为引用类型。用 javac+d8 构造无参/2参/3参/宽首参/5参及分支/switch 样例验证；运行时需 `android.util.Log` stub（driver classpath 前置 stubout）。
   - gh CLI 凭据再次失效时（HTTP 401），用 `echo -e "protocol=https\nhost=github.com\n" | git credential fill` 取 token 后 `gh auth login --with-token` 恢复（本环境 helper=/app/agent/bin/agent git-credential-helper，username=Forinxy）。
 
 [Project Knowledge Summary]
@@ -114,7 +90,6 @@ Entries discovered by the Agent during task execution should follow this format:
   - 加固产物 native 空指针崩溃（tombstone `signal 11 SIGSEGV fault addr 0x0 / pc 0 lr 0 / #00 pc 0 <unknown>`）发生在保护 native 层，Java `Thread.setDefaultUncaughtExceptionHandler` 抓不到。诊断手段：注入崩溃日志采集——`libsecurity_check.so` 增加 `nativeInstallCrashHandler(String path)`（注册 SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE/SIGTRAP 的 SA_SIGINFO handler），handler 内用 async-signal-safe（open/write/close，绝不可用 std::ofstream/malloc）记录时间戳/pid/tid/signal/pc/lr/sp/fault（ucontext：arm64 用 uc_mcontext.pc/regs[30]/sp，arm32 用 arm_pc/arm_lr/arm_sp）+ `_Unwind_Backtrace`（<unwind.h>，最多 32 帧）至日志文件并输出 logcat（tag ADFXCBNM_CRASH），记录后 `signal(sig,SIG_DFL); raise(sig)` 重放信号保留系统 tombstone。
   - Java 层配合：`onCreate` 在 `System.loadLibrary` 成功后立即调用 install；日志优先写 `getExternalFilesDir`（`/sdcard/Android/data/<pkg>/files/`，免权限可提取）再写内部 filesDir 副本，`writeCrashLog` 带 pkg/pid/tid/nativeOk/features 上下文，检测循环加 checks:start/checks:done 阶段 marker 定位崩溃阶段。日志提取：文件管理器读外部目录或 logcat 过滤 ADFXCBNM_CRASH。
   - 重新编译注入资源：4 ABI so 用 NDK clang++ 直编（`aarch64-linux-android26-clang++ -std=c++17 -O2 -fPIC -shared protection.cpp -o <out> -llog -landroid`）；dex 需先 javac（`-source 1.8 -target 1.8 -bootclasspath android.jar`）再 d8（`d8 --release --lib android.jar --output <dir> classes`）；注入回归用 zipfile 注入 classes2.dex+so+features.cfg 后 apksigner 签名，校验资源与资产 SHA-256 一致。
-  - GitHub release asset 上传端点必须是 `uploads.github.com`（不是 api.github.com），否则返回 404 Not Found；Content-Type 用 application/zip 或省略均可，asset 名沿用 app-debug.apk。
 
 [Project Knowledge Summary]
 - Date: 2026-09-06
@@ -129,21 +104,11 @@ Entries discovered by the Agent during task execution should follow this format:
 
 [Project Knowledge Summary]
 - Date: 2026-09-07
-- Context: Discovered by Agent while diagnosing 勾选 FrostShell 加固后必闪退且无注入崩溃日志（用户反馈 v9.10.7 后仍复现）
+- Context: Discovered by Agent while diagnosing and fixing FrostShell 壳与 ADFXCBNM 叠加层的共存冲突（勾选 FrostShell 必闪退且无注入崩溃日志）
 - Category: Troubleshooting & Debugging
 - Instructions:
-  - FrostShell 壳 + ADFXCBNM 叠加层双保护冲突是"勾选 FrostShell 必闪退、无 crash log"的根因。壳 native 库 libvenSec.so 内置 ByteHook（strings 可见 libbytehook.so/bytehook-plt-trampolines/"hook chain ... GOT REPLACE"），运行时对 open/read/write/mmap/mprotect/dlopen/dlsym/kill 等做 GOT/PLT hook；叠加层 SecurityCheckProvider 的 anti_hook(checkHookEnhanced→hookCheckFunctionPrologue+detectLibcHook)、anti_inject(checkInjection)、runtime_protect 检测到 libc 函数头被改写/进程被 hook，命中 CRITICAL 集合（hook/inject/code_inject/runtime_protect）→ enforce→triggerKill→nativeKill→kill(getpid(), SIGKILL)。
-  - SIGKILL 无法被已安装的 crash handler 捕获（只注册了 SIGSEGV/ABRT/BUS/ILL/FPE/TRAP），所以无 adfxcbnm_crash.log、无 tombstone、无注入日志——这解释了"闪退但无任何日志"。
-  - features.cfg 中 signature_sha256 取自 signEnabled 时加载的 signCert 证书 hash（MainActivity 2300 行），叠加签名用同一 signKey/signCert，故 sig_verify 自洽；真正冲突点是 anti_hook/anti_inject/runtime_protect/code_inject 对壳自身行为的误判。
-  - 修复方向：工具 UI 启用 FrostShell 壳时，自动从 enabledFeatures 剔除/弱化 anti_hook、anti_inject、runtime_protect、code_inject（或 SecurityCheckProvider 增加"壳共存白名单"，识别 libvenSec/libbytehook 后跳过对应检测）。
-
-[Project Knowledge Summary]
-- Date: 2026-09-07
-- Context: Discovered by Agent while implementing FrostShell 壳冲突修复（强度+兼容性）
-- Category: Troubleshooting & Debugging
-- Instructions:
-  - 壳共存修复范式（检测能区分"壳自身防护"与"攻击者 hook"，不简单关闭检测）：① native 层 isFunctionHooked 解码 ARM64 B/BL 指令 imm26 得跳转目标地址（target = pc + imm<<2，符号扩展），用 /proc/self/maps 判断目标所在库——落在 libc/libart/libvenSec/libsecurity_check 等可信库内放行，落在 frida/xposed/sandhook 等攻击库或匿名映射则判定为攻击；② detectLibcHook 壳共存时豁免；③ Java 层 SecurityCheckProvider 加 isShellCoexist()（读 maps 找 libvenSec/libbytehook），enforce 与 monitor 线程对 hook/inject/code_inject/runtime_protect 的 CRITICAL kill 豁免，但 frida/xposed/root/magisk/debugger 独立检测保留。
-  - 关键机制：SIGKILL 无法被 signal handler 捕获，所以"闪退无日志"基本指向 triggerKill→nativeKill→SIGKILL 路径，而非 SIGSEGV。Java 层 anti_hook 走 detectHookLibs()（maps 库名列表 XposedBridge/sandhook 等），native checkHookEnhanced 走 hookCheckFunctionPrologue 函数头指令检测——后者是 ByteHook 改写函数头的误判来源。
+  - 壳共存冲突根因：FrostShell 壳 native 库 libvenSec.so 内置 ByteHook，运行时对 open/read/write/mmap/mprotect/dlopen/dlsym/kill 做 GOT/PLT hook；叠加层 SecurityCheckProvider 的 anti_hook/anti_inject/runtime_protect/code_inject 检测到 libc 函数头被改写/进程被 hook，命中 CRITICAL → enforce→triggerKill→nativeKill→SIGKILL。SIGKILL 无法被 crash handler 捕获（只注册了 SIGSEGV/ABRT/BUS/ILL/FPE/TRAP），故"闪退无日志、无 tombstone"基本指向此路径（区别于 SIGSEGV 写坏 dex）。
+  - 壳共存修复范式（区分"壳自身防护"与"攻击者 hook"，不简单关闭检测）：① native isFunctionHooked 解码 ARM64 B/BL imm26 得跳转目标（target=pc+imm<<2，符号扩展），用 /proc/self/maps 判断目标所在库——落在 libc/libart/libvenSec/libsecurity_check 等可信库内放行，落在 frida/xposed/sandhook 等攻击库或匿名映射则判定攻击；② Java 层 SecurityCheckProvider 加 isShellCoexist()（读 maps 找 libvenSec/libbytehook），enforce 与 monitor 对 hook/inject/code_inject/runtime_protect 的 CRITICAL kill 豁免，但 frida/xposed/root/magisk/debugger 独立检测保留。
   - 保护模块字符串全在 S_obfuscated.java 混淆（XOR K {0x12..0xF0}），新增字符串必须同样转成字节数组（python XOR 生成），Java 源码内禁止裸字符串。
   - CMake POST_BUILD 只在 Gradle 编译对应 ABI 时更新 assets/lib so；assembleDebug 增量构建可能用缓存 APK 不含新 assets。手动替换 assets so 后必须强制重新构建（--offline assembleDebug），并校验 APK 内资源 sha256 与源码 assets 一致。native 修改同步两份 protection.cpp：FrostShell-CLI/engine/protect-module/src/ 与 app/src/main/cpp/。
 
@@ -174,3 +139,12 @@ Entries discovered by the Agent during task execution should follow this format:
   - 自签名 X.509 证书有效期超过 2049 年时不能再用 UTCTime(tag 0x17, 2位年)，必须按年份切换到 GeneralizedTime(tag 0x18, yyyyMMddHHmmssZ)，否则 X509 解析会把 2126 年错读成 2026 年。
   - Java 调用 Kotlin object 需用 `Object.INSTANCE.method()`，onError 回调要 `Function1<String, Unit>`(返回 Unit.INSTANCE)；Compose 对话框内后台任务用 `scope.launch + withContext(Dispatchers.IO)`，不能直接用 Activity.runOnUiThread。
   - keystore 类型自动检测：扩展名 jks/keystore/ks→JKS、bks→BKS、否则 PKCS12；用 linkedSetOf(extType, PKCS12, JKS, BKS) 逐个尝试，先按别名取 keyStore.getCertificate(alias)，无别名时取第一个 isKeyEntry 的 key 别名。指纹用 cert.encoded 做 SHA-1/SHA-256/MD5。
+
+[Project Knowledge Summary]
+- Date: 2026-09-09
+- Context: Discovered by Agent while adding BKS keystore support and 多签名保存 to AndroidHardeningTool
+- Category: Environment Configuration / Troubleshooting & Debugging
+- Instructions:
+  - BKS 依赖 BouncyCastle：bcprov-jdk15on-1.67.jar 已放 app/libs 并在 build.gradle.kts 用 implementation(files(...)) 引入；SigningTool 静态块 Security.addProvider(BouncyCastleProvider())。JKS 在 Android/JVM 的 JSSE 无 provider，只能走自实现 JksParser；PKCS12/BKS 走 KeyStore API。
+  - generateKeystore 用 spec.keyPass 加密 key entry，而 loadSignatureKey 默认把 storePass 兼作 keyPass；密码分离（storePass≠keyPass）时读取/转换必须显式传 keyPass/srcKeyPass，否则报"无法读取密钥"。转换通用入口 convertKeystoreFormat(file, storePass, aliasHint, outFile, targetType, newStorePass, newKeyPass, srcKeyPass=null, onError)，onError 是最后一个参数；convertToP12 委托它。
+  - 探针验证 classpath：kotlin-classes-debug + ironshell-deps.jar + bcprov-jdk15on-1.67.jar + kotlin-stdlib；JVM 直驱需 /tmp/mockstub 提供 android.* 与 org.json Stub（SharedPreferences/Context 环境没有真实实现，UI 层 JSON 序列化用 SignProfileProbe 验证）。

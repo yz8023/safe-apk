@@ -94,6 +94,7 @@ object FrostShellEngine {
                 if (options.callIndirection) this.callIndirection(true)
                 if (options.methodOverload) this.methodOverload(true)
                 if (options.fieldRename) this.fieldRename(true)
+                if (options.classRename) this.classRename(true)
             }
         if (options.extractMethodRules != null) {
             com.adfxcbnm.frostshell.config.FrostProtectRules.setMemberRules(options.extractMethodRules.toTypedArray())

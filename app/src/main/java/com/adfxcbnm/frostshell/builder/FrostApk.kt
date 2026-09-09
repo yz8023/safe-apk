@@ -65,6 +65,7 @@ class FrostApk private constructor(builder: Builder) : FrostAndroidPackage(build
     }
 
     private fun loadKeyStore(keystoreFile: File, password: CharArray): java.security.KeyStore {
+        ensureBcProvider()
         var lastError: Exception? = null
         FileInputStream(keystoreFile).use { fis ->
             for (type in arrayOf("JKS", "PKCS12", "BKS")) {
@@ -78,6 +79,16 @@ class FrostApk private constructor(builder: Builder) : FrostAndroidPackage(build
             }
         }
         throw IOException("Unable to load keystore ${keystoreFile.absolutePath}", lastError)
+    }
+
+    private fun ensureBcProvider() {
+        try {
+            if (java.security.Security.getProvider("BC") == null) {
+                java.security.Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+            }
+        } catch (t: Throwable) {
+            // BKS 不可用时仍可尝试 PKCS12/JKS
+        }
     }
 
     override fun writeProxyAppName(manifestDir: String) {
