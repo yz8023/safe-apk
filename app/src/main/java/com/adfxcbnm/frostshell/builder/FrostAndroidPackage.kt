@@ -3,6 +3,7 @@ package com.adfxcbnm.frostshell.builder
 import com.adfxcbnm.frostshell.config.FrostConst
 import com.adfxcbnm.frostshell.config.FrostProtectRules
 import com.adfxcbnm.frostshell.config.FrostShellConfig
+import com.adfxcbnm.frostshell.dex.FrostClassRenamer
 import com.adfxcbnm.frostshell.dex.FrostDexObfuscator
 import com.adfxcbnm.frostshell.dex.FrostJunkCodeGenerator
 import com.adfxcbnm.frostshell.dex.FrostStringEncryptor
@@ -78,6 +79,7 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
     private var callIndirection = false
     private var methodOverload = false
     private var fieldRename = false
+    private var classRename = false
 
     init {
         this.filePath = builder.filePath
@@ -106,6 +108,7 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         this.callIndirection = builder.callIndirection
         this.methodOverload = builder.methodOverload
         this.fieldRename = builder.fieldRename
+        this.classRename = builder.classRename
     }
 
     fun setProtectConfigFile(protectConfigFile: String?) {
@@ -196,6 +199,12 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
 
     fun setFieldRename(fieldRename: Boolean) {
         this.fieldRename = fieldRename
+    }
+
+    fun isClassRename(): Boolean = classRename
+
+    fun setClassRename(classRename: Boolean) {
+        this.classRename = classRename
     }
 
     fun isSmaller(): Boolean = smaller
@@ -718,9 +727,20 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
             FrostLogUtils.info("Keep classes: %d, total classes: %d", keepClassesCount.get(), totalClassesCount.get())
         }
         // 阶段2：文件级 DEX 混淆 pass（类打乱/Debug 移除/Goto 插入/算术/控制流/调用间接化/
-        // 方法重载/字段重命名）。必须在方法体抽取之前对方法体完整的 dex 串行执行：
+        // 方法重载/字段重命名/类重命名）。必须在方法体抽取之前对方法体完整的 dex 串行执行：
         // extractAllMethods 输出的 stub dex 携带全局引用池索引，直接操作会抛出
         // Invalid field index / truncated 错误（此类错误导致 pass 在抽取后大面积降级）。
+        // 类重命名需要跨 dex 全局映射，须在进入本循环前置构建。
+        val classRenameMap: Map<String, String> = if (isClassRename()) {
+            try {
+                FrostClassRenamer.buildClassRenameMap(dexFiles)
+            } catch (e: Exception) {
+                FrostLogUtils.warn("WARNING: class rename map build fail: %s", e.message)
+                emptyMap()
+            }
+        } else {
+            emptyMap()
+        }
         for (dexFile in dexFiles) {
             if (!dexFile.exists()) continue
             try {
@@ -747,6 +767,9 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
                 }
                 if (isFieldRename()) {
                     FrostDexObfuscator.applyFieldRename(dexFile)
+                }
+                if (classRenameMap.isNotEmpty() && isClassRename()) {
+                    FrostClassRenamer.applyClassRenameDex(dexFile, classRenameMap)
                 }
             } catch (e: Exception) {
                 FrostLogUtils.warn("WARNING: file-level dex obfuscation %s fail: %s", dexFile.name, e.message)
@@ -1019,6 +1042,13 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
     }
 
     private fun loadKeyStore(inputStream: java.io.InputStream, password: CharArray): KeyStore? {
+        try {
+            if (java.security.Security.getProvider("BC") == null) {
+                java.security.Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+            }
+        } catch (t: Throwable) {
+            // BKS 分支不可用，仍可尝试 PKCS12/JKS
+        }
         val data: ByteArray = try {
             val baos = ByteArrayOutputStream()
             val buf = ByteArray(4096)
@@ -1147,6 +1177,7 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
         var callIndirection = false
         var methodOverload = false
         var fieldRename = false
+        var classRename = false
 
         fun filePath(path: String): Builder {
             this.filePath = path
@@ -1245,6 +1276,11 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
 
         fun fieldRename(fieldRename: Boolean): Builder {
             this.fieldRename = fieldRename
+            return this
+        }
+
+        fun classRename(classRename: Boolean): Builder {
+            this.classRename = classRename
             return this
         }
 

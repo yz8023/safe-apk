@@ -19,6 +19,7 @@ data class FrostEngineOptions(
     val callIndirection: Boolean = false,
     val methodOverload: Boolean = false,
     val fieldRename: Boolean = false,
+    val classRename: Boolean = false,
     val signEnabled: Boolean = true,
     val signKeystorePath: String? = null,
     val signAlias: String? = null,

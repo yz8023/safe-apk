@@ -12,6 +12,7 @@ import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.SecureRandom
+import java.security.Security
 import java.security.Signature
 import java.security.cert.X509Certificate
 import java.security.interfaces.ECPublicKey
@@ -24,6 +25,24 @@ import java.util.Locale
  * 签名工具：keystore 信息查看与生成（支持 RSA / EC，自签名证书用自建 DER 编码）。
  */
 object SigningTool {
+
+    private val providerRegistered = try {
+        if (Security.getProvider("BC") == null) {
+            Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+        }
+        true
+    } catch (t: Throwable) {
+        false
+    }
+
+    /** BKS/BKS-V1/UBER 等格式由 BouncyCastle provider 提供；注册失败时这些格式不可用。 */
+    private fun bcProviderAvailable(): Boolean = providerRegistered
+
+    /**
+     * JKS 的纯解析依赖自实现 JksParser（Android 无 SunJCE JKS provider），
+     * 因此 JKS 文件无法通过 KeyStore API 读取要求 provider 的格式。
+     * 但真正的 .bks 文件必须走 BouncyCastle 的 KeyStore，而不是 JKS 解析。
+     */
 
     data class KeystoreInfo(
         val file: String,
@@ -1052,17 +1071,47 @@ object SigningTool {
         p12Out: File,
         newStorePass: String = "",
         newKeyPass: String = "",
+        srcKeyPass: String? = null,
+        onError: (String) -> Unit
+    ): Boolean {
+        return convertKeystoreFormat(
+            keystoreFile, storePass, aliasHint, p12Out,
+            "PKCS12", newStorePass, newKeyPass, srcKeyPass, onError
+        )
+    }
+
+    /**
+     * 通用 keystore 格式转换：jks/p12/pfx/bks 输入 → PKCS12 (.p12/.pfx) 或 BKS (.bks) 输出。
+     * 输出容器用 JSSE/BouncyCastle KeyStore API；仅导出单个 key entry（主别名）。
+     */
+    fun convertKeystoreFormat(
+        keystoreFile: File,
+        storePass: String,
+        aliasHint: String?,
+        outFile: File,
+        targetType: String,
+        newStorePass: String = "",
+        newKeyPass: String = "",
+        srcKeyPass: String? = null,
         onError: (String) -> Unit
     ): Boolean {
         return try {
-            val key = loadSignatureKey(keystoreFile, storePass, aliasHint)
+            val key = loadSignatureKey(keystoreFile, storePass, aliasHint, srcKeyPass)
                 ?: run {
                     onError("无法读取密钥（检查密码/别名）")
                     return false
                 }
+            val outType = when (targetType.uppercase()) {
+                "BKS", ".bks" -> "BKS"
+                else -> "PKCS12"
+            }
+            if (outType == "BKS" && !bcProviderAvailable()) {
+                onError("BKS 需要 BouncyCastle 支持（当前不可用）")
+                return false
+            }
             val storePw = newStorePass.ifBlank { storePass }
             val keyPw = newKeyPass.ifBlank { storePass }
-            val ks = KeyStore.getInstance("PKCS12")
+            val ks = KeyStore.getInstance(outType)
             ks.load(null, null)
             ks.setKeyEntry(
                 key.alias.ifBlank { "adh" },
@@ -1070,10 +1119,10 @@ object SigningTool {
                 keyPw.toCharArray(),
                 arrayOf(key.certificate)
             )
-            p12Out.parentFile?.mkdirs()
-            java.io.FileOutputStream(p12Out).use { ks.store(it, storePw.toCharArray()) }
-            if (!p12Out.exists() || p12Out.length() <= 0) {
-                onError("转换生成的 p12 文件无效")
+            outFile.parentFile?.mkdirs()
+            FileOutputStream(outFile).use { ks.store(it, storePw.toCharArray()) }
+            if (!outFile.exists() || outFile.length() <= 0) {
+                onError("转换生成的 ${outType} 文件无效")
                 return false
             }
             true
@@ -1104,46 +1153,57 @@ object SigningTool {
         }
     }
 
+    /** 通用 KeyStore API 加载签名密钥（PKCS12 / BKS 等 provider 支持的格式） */
+    private fun loadFromKeyStoreFile(
+        keystoreFile: File,
+        type: String,
+        storePass: String,
+        aliasHint: String?,
+        keyPass: String? = null
+    ): SignatureKey? {
+        if (!bcProviderAvailable()) return null
+        return try {
+            val ks = KeyStore.getInstance(type)
+            FileInputStream(keystoreFile).use { ks.load(it, storePass.toCharArray()) }
+            val alias = aliasHint?.takeIf { it.isNotBlank() && ks.containsAlias(it) }
+                ?: ks.aliases().toList().firstOrNull { ks.isKeyEntry(it) }
+                ?: return null
+            val pass = (keyPass ?: storePass).toCharArray()
+            val key = ks.getKey(alias, pass) as? PrivateKey ?: return null
+            val cert = ks.getCertificate(alias) as? X509Certificate ?: return null
+            SignatureKey(alias, key, cert)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /** 通用加载签名密钥：自动识别 jks / p12 / bks / pk8pem */
-    fun loadSignatureKey(keystoreFile: File, storePass: String, aliasHint: String?): SignatureKey? {
+    fun loadSignatureKey(
+        keystoreFile: File,
+        storePass: String,
+        aliasHint: String?,
+        keyPass: String? = null
+    ): SignatureKey? {
         val name = keystoreFile.name.lowercase()
         return when {
             name.endsWith(".pk8") || name.endsWith(".pem") || name.endsWith(".key") -> {
                 val pair = resolvePk8PemFiles(keystoreFile) ?: return null
-                loadKeysFromPk8Pem(pair.first, pair.second, storePass)
+                loadKeysFromPk8Pem(pair.first, pair.second, keyPass ?: storePass)
             }
             name.endsWith(".p12") || name.endsWith(".pfx") -> {
-                try {
-                    val ks = KeyStore.getInstance("PKCS12")
-                    java.io.FileInputStream(keystoreFile).use { ks.load(it, storePass.toCharArray()) }
-                    val alias = aliasHint?.takeIf { it.isNotBlank() && ks.containsAlias(it) }
-                        ?: ks.aliases().toList().firstOrNull { ks.isKeyEntry(it) }
-                        ?: return null
-                    val key = ks.getKey(alias, storePass.toCharArray()) as? PrivateKey ?: return null
-                    val cert = ks.getCertificate(alias) as? X509Certificate ?: return null
-                    SignatureKey(alias, key, cert)
-                } catch (e: Exception) {
-                    null
-                }
+                loadFromKeyStoreFile(keystoreFile, "PKCS12", storePass, aliasHint, keyPass)
             }
-            name.endsWith(".jks") || name.endsWith(".keystore") || name.endsWith(".ks") || name.endsWith(".bks") -> {
+            name.endsWith(".jks") || name.endsWith(".keystore") || name.endsWith(".ks") -> {
                 loadKeysFromJks(keystoreFile, storePass, aliasHint)
+            }
+            name.endsWith(".bks") -> {
+                loadFromKeyStoreFile(keystoreFile, "BKS", storePass, aliasHint, keyPass)
             }
             else -> {
-                // 自动探测
+                // 自动探测：jks 纯解析 > p12 > bks
                 loadKeysFromJks(keystoreFile, storePass, aliasHint)
-                    ?: try {
-                        val ks = KeyStore.getInstance("PKCS12")
-                        java.io.FileInputStream(keystoreFile).use { ks.load(it, storePass.toCharArray()) }
-                        val alias = aliasHint?.takeIf { it.isNotBlank() && ks.containsAlias(it) }
-                            ?: ks.aliases().toList().firstOrNull { ks.isKeyEntry(it) }
-                            ?: return null
-                        val key = ks.getKey(alias, storePass.toCharArray()) as? PrivateKey ?: return null
-                        val cert = ks.getCertificate(alias) as? X509Certificate ?: return null
-                        SignatureKey(alias, key, cert)
-                    } catch (e: Exception) {
-                        null
-                    }
+                    ?: loadFromKeyStoreFile(keystoreFile, "PKCS12", storePass, aliasHint, keyPass)
+                    ?: loadFromKeyStoreFile(keystoreFile, "BKS", storePass, aliasHint, keyPass)
             }
         }
     }

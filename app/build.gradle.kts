@@ -13,8 +13,8 @@ android {
         applicationId = "Forinxy.safe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 64
-        versionName = "9.10.22"
+        versionCode = 65
+        versionName = "9.10.23"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -84,4 +84,5 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("com.android.tools.build:apksig:8.5.0")
     implementation(files("libs/ironshell-deps.jar"))
+    implementation(files("libs/bcprov-jdk15on-1.67.jar"))
 }

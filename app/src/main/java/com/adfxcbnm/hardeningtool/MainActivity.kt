@@ -70,6 +70,112 @@ class MutableFeatureItem(val name: String, val category: String, val icon: Image
 
 data class AppInfo(val name: String, val packageName: String, val icon: Drawable? = null)
 
+/**
+ * 已保存的签名配置。每个 profile 在 filesDir/saved_signings/ 下保留独立 keystore 副本
+ * （keystorePath 指向该副本的绝对路径），并记录别名与双密码。
+ */
+data class SigningProfile(
+    val name: String,
+    val keystorePath: String,
+    val alias: String,
+    val storePass: String,
+    val keyPass: String
+) {
+    fun toJson(): String {
+        return "{\"name\":${jsonStr(name)},\"keystore\":${jsonStr(keystorePath)},\"alias\":${jsonStr(alias)},\"store\":${jsonStr(storePass)},\"key\":${jsonStr(keyPass)}}"
+    }
+
+    companion object {
+        fun fromJson(raw: String): SigningProfile? = try {
+            val o = org.json.JSONObject(raw)
+            SigningProfile(
+                name = o.optString("name", ""),
+                keystorePath = o.optString("keystore", ""),
+                alias = o.optString("alias", ""),
+                storePass = o.optString("store", ""),
+                keyPass = o.optString("key", "")
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
+private fun jsonStr(s: String): String {
+    return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
+}
+
+private fun sanitizeFileName(name: String): String {
+    val cleaned = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+    return cleaned.ifEmpty { "signing" }
+}
+
+/**
+ * 生成混淆字典：随机词条（含大写/小写/数字/下划线），导出为文本文件到系统下载目录。
+ * @return 结果描述
+ */
+private fun generateObfuscationDict(context: Context, count: Int, minLen: Int): String {
+    return try {
+        val lower = "abcdefghijklmnopqrstuvwxyz".toCharArray()
+        val upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".toCharArray()
+        val digits = "0123456789".toCharArray()
+        val all = lower + upper + digits + '_'
+        val random = java.security.SecureRandom()
+        val words = LinkedHashSet<String>()
+        while (words.size < count) {
+            val length = minLen + random.nextInt(12)
+            val sb = StringBuilder(length)
+            for (i in 0 until length) sb.append(all[random.nextInt(all.size)])
+            words.add(sb.toString())
+        }
+        val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(java.util.Date())
+        val content = buildString {
+            append("# obfuscation dictionary generated at $ts\n")
+            append("# count=$count minLen=$minLen\n")
+            for (w in words) append(w).append('\n')
+        }
+        val src = File(context.cacheDir, "obfuscation_dict_$ts.txt")
+        src.writeText(content)
+        val dest = File(
+            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: context.filesDir,
+            "obfuscation_dict_$ts.txt"
+        )
+        val saved = OutputSettings.copyOutput(context, src, dest)
+        src.delete()
+        if (saved != null) {
+            "已生成 ${words.size} 个词条并导出: $saved"
+        } else {
+            "已生成 ${words.size} 个词条，但导出失败"
+        }
+    } catch (e: Exception) {
+        "字典生成失败: ${e.message}"
+    }
+}
+
+private const val SAVED_SIGNINGS_KEY = "saved_signings"
+
+private fun loadSigningProfiles(prefs: android.content.SharedPreferences): List<SigningProfile> {
+    val raw = prefs.getString(SAVED_SIGNINGS_KEY, "") ?: ""
+    if (raw.isBlank()) return emptyList()
+    return try {
+        val arr = org.json.JSONArray(raw)
+        val list = ArrayList<SigningProfile>(arr.length())
+        for (i in 0 until arr.length()) {
+            SigningProfile.fromJson(arr.getString(i))?.let { list.add(it) }
+        }
+        list
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveSigningProfiles(prefs: android.content.SharedPreferences, profiles: List<SigningProfile>) {
+    val arr = org.json.JSONArray()
+    for (p in profiles) arr.put(p.toJson())
+    prefs.edit().putString(SAVED_SIGNINGS_KEY, arr.toString()).apply()
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -154,12 +260,19 @@ fun MainScreen() {
     var signAlias by remember { mutableStateOf(prefs.getString("sign_alias", "") ?: "") }
     var signStorePass by remember { mutableStateOf(prefs.getString("sign_store_pass", "") ?: "") }
     var signKeyPass by remember { mutableStateOf(prefs.getString("sign_key_pass", "") ?: "") }
+    var savedSignings by remember { mutableStateOf(loadSigningProfiles(prefs)) }
+    var showSaveSigningDialog by remember { mutableStateOf(false) }
+    var savedSigningNameInput by remember { mutableStateOf("") }
     var frostKeepClasses by remember { mutableStateOf(prefs.getBoolean("frost_keep_classes", false)) }
     var frostSmaller by remember { mutableStateOf(prefs.getBoolean("frost_smaller", false)) }
     var frostVerifySign by remember { mutableStateOf(prefs.getBoolean("frost_verify_sign", false)) }
     var frostSoRandomization by remember { mutableStateOf(prefs.getBoolean("frost_so_randomization", false)) }
     var frostStringEncrypt by remember { mutableStateOf(prefs.getBoolean("frost_string_encrypt", false)) }
     var frostStringEncryptMinLen by remember { mutableStateOf(prefs.getInt("frost_string_encrypt_min_len", 6)) }
+    var showDictDialog by remember { mutableStateOf(false) }
+    var dictGenerateCount by remember { mutableStateOf(200) }
+    var dictGenerateMinLen by remember { mutableStateOf(6) }
+    var dictLastInfo by remember { mutableStateOf("") }
     var frostMethodFilterEnabled by remember { mutableStateOf(prefs.getBoolean("frost_method_filter_enabled", false)) }
     var frostMethodFilterRules by remember {
         mutableStateOf(prefs.getString("frost_method_filter_rules", "") ?: "")
@@ -188,6 +301,7 @@ fun MainScreen() {
     var frostCallIndirection by remember { mutableStateOf(prefs.getBoolean("frost_call_indirection", false)) }
     var frostMethodOverload by remember { mutableStateOf(prefs.getBoolean("frost_method_overload", false)) }
     var frostFieldRename by remember { mutableStateOf(prefs.getBoolean("frost_field_rename", false)) }
+    var frostClassRename by remember { mutableStateOf(prefs.getBoolean("frost_class_rename", false)) }
     var showOutputDirTextDialog by remember { mutableStateOf(false) }
     var outputDirTextInput by remember { mutableStateOf("") }
     var showSignInfoDialog by remember { mutableStateOf(false) }
@@ -718,6 +832,41 @@ fun MainScreen() {
                     accentColor = MaterialTheme.colorScheme.tertiary
                 )
 
+                Spacer(Modifier.height(8.dp))
+
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { frostStringEncrypt = !frostStringEncrypt }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("字符串加密", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                if (frostStringEncrypt) "中文字符串/URL 常量加密 (minLen=${frostStringEncryptMinLen})"
+                                else "对敏感字符串做 L1 混淆（配合 FrostShell 引擎）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(
+                            checked = frostStringEncrypt,
+                            onCheckedChange = {
+                                frostStringEncrypt = it
+                                prefs.edit().putBoolean("frost_string_encrypt", it).apply()
+                            }
+                        )
+                    }
+                }
+
                 Spacer(Modifier.height(10.dp))
 
                 // FrostShell Engine Toggle
@@ -819,6 +968,7 @@ fun MainScreen() {
                             callIndirection = frostCallIndirection,
                             methodOverload = frostMethodOverload,
                             fieldRename = frostFieldRename,
+                            classRename = frostClassRename,
                             signEnabled = signEnabled,
                             signKeystorePath = signKeystorePath.ifEmpty { null },
                             signAlias = signAlias.ifEmpty { null },
@@ -1566,6 +1716,60 @@ fun MainScreen() {
                         prefs.edit().putBoolean("frost_string_encrypt", it).apply()
                     }
                 )
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "最小加密长度",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = frostStringEncryptMinLen.toString(),
+                                onValueChange = { text ->
+                                    val v = text.toIntOrNull()
+                                    if (v != null && v > 0) {
+                                        frostStringEncryptMinLen = v
+                                        prefs.edit().putInt("frost_string_encrypt_min_len", v).apply()
+                                    }
+                                },
+                                modifier = Modifier.width(72.dp).height(44.dp),
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "≥该长度的中文字符串一定加密；同时生成的最小随机词条长度",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(
+                            onClick = { showDictDialog = true },
+                            modifier = Modifier.fillMaxWidth().height(36.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("生成混淆字典", fontSize = 13.sp)
+                        }
+                        if (dictLastInfo.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                dictLastInfo,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
                 SettingRow(
                     icon = Icons.Default.FavoriteBorder,
                     title = "仅抽取指定函数",
@@ -1678,6 +1882,16 @@ fun MainScreen() {
                         prefs.edit().putBoolean("frost_field_rename", it).apply()
                     }
                 )
+                SettingRow(
+                    icon = Icons.Default.Category,
+                    title = "类重命名",
+                    subtitle = "跨 dex 全局类名随机化，引用/字符串反射保护同步重映射 (class-rename)",
+                    checked = frostClassRename,
+                    onCheckedChange = {
+                        frostClassRename = it
+                        prefs.edit().putBoolean("frost_class_rename", it).apply()
+                    }
+                )
                 Spacer(Modifier.height(8.dp))
                 Text("剔除 ABI（未勾选的将保留）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -1765,6 +1979,96 @@ fun MainScreen() {
                                     Text("清除", fontSize = 13.sp)
                                 }
                             }
+                            OutlinedButton(
+                                onClick = {
+                                    val cur = if (signKeystorePath.isNotEmpty()) File(signKeystorePath).name else "默认调试keystore"
+                                    savedSigningNameInput = if (signAlias.isNotBlank()) signAlias else cur
+                                    showSaveSigningDialog = true
+                                },
+                                modifier = Modifier.fillMaxWidth().height(36.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("保存当前签名为预设", fontSize = 13.sp)
+                            }
+                            if (savedSignings.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "已保存签名 (点击切换)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                savedSignings.forEach { profile ->
+                                    val active = profile.keystorePath == signKeystorePath && profile.alias == signAlias
+                                    Surface(
+                                        color = if (active) MaterialTheme.colorScheme.secondaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().clickable {
+                                                signKeystorePath = profile.keystorePath
+                                                signAlias = profile.alias
+                                                signStorePass = profile.storePass
+                                                signKeyPass = profile.keyPass
+                                                prefs.edit()
+                                                    .putString("sign_keystore_path", signKeystorePath)
+                                                    .putString("sign_alias", signAlias)
+                                                    .putString("sign_store_pass", signStorePass)
+                                                    .putString("sign_key_pass", signKeyPass)
+                                                    .apply()
+                                                addLog("已切换到签名: ${profile.name}", LogType.INFO)
+                                            }.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.Default.VpnKey,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Spacer(Modifier.width(6.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    profile.name,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                val aliasShown = if (profile.alias.isNotBlank()) "alias=${profile.alias}" else "alias=自动"
+                                                Text(
+                                                    aliasShown + " · " + File(profile.keystorePath).name,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    val updated = savedSignings.filterNot { it.name == profile.name }
+                                                    runCatching { File(profile.keystorePath).delete() }
+                                                    savedSignings = updated
+                                                    saveSigningProfiles(prefs, updated)
+                                                    addLog("已删除签名预设: ${profile.name}", LogType.INFO)
+                                                }
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Delete,
+                                                    contentDescription = "删除",
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                }
+                            }
                             Spacer(Modifier.height(8.dp))
                             OutlinedButton(
                                 onClick = {
@@ -1790,6 +2094,150 @@ fun MainScreen() {
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    if (showDictDialog) {
+        AlertDialog(
+            onDismissRequest = { showDictDialog = false },
+            title = { Text("生成混淆字典") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "生成一组随机词条（大小写字母+数字+下划线），可作类/方法/字段重命名或字符串填充参考。生成后导出为文本字典到系统下载目录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("词条数量", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        OutlinedTextField(
+                            value = dictGenerateCount.toString(),
+                            onValueChange = { dictGenerateCount = it.toIntOrNull()?.coerceIn(10, 10000) ?: dictGenerateCount },
+                            modifier = Modifier.width(96.dp),
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("词条最小长度", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        OutlinedTextField(
+                            value = dictGenerateMinLen.toString(),
+                            onValueChange = { dictGenerateMinLen = it.toIntOrNull()?.coerceIn(2, 32) ?: dictGenerateMinLen },
+                            modifier = Modifier.width(96.dp),
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    if (dictLastInfo.isNotEmpty()) {
+                        Text(
+                            dictLastInfo,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            val count = dictGenerateCount.coerceIn(10, 10000)
+                            val minLen = dictGenerateMinLen.coerceIn(2, 32)
+                            val info = withContext(Dispatchers.IO) { generateObfuscationDict(context, count, minLen) }
+                            dictLastInfo = info
+                        }
+                    }
+                ) {
+                    Text("生成并导出")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDictDialog = false }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+
+    if (showSaveSigningDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveSigningDialog = false },
+            title = { Text("保存当前签名为预设") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "将当前 keystore/别名/密码保存为预设，可在签名设置区快速切换。keystore 会被复制到应用私有目录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = savedSigningNameInput,
+                        onValueChange = { savedSigningNameInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("预设名称") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val name = savedSigningNameInput.trim()
+                        if (name.isEmpty()) {
+                            addLog("预设名称不能为空", LogType.WARNING)
+                            return@TextButton
+                        }
+                        val existing = savedSignings.firstOrNull { it.name == name }
+                        if (existing != null) {
+                            addLog("预设名称已存在: $name", LogType.WARNING)
+                            return@TextButton
+                        }
+                        var srcPath = signKeystorePath
+                        if (srcPath.isEmpty()) {
+                            val debugKs = File(context.filesDir, "adh_debug.p12")
+                            if (debugKs.exists()) srcPath = debugKs.absolutePath
+                        }
+                        val storedPath = if (srcPath.isNotEmpty()) {
+                            val srcFile = File(srcPath)
+                            val dir = File(context.filesDir, "saved_signings")
+                            if (!dir.exists()) dir.mkdirs()
+                            val dst = File(dir, sanitizeFileName(name) + "." + srcFile.extension.ifEmpty { "keystore" })
+                            val copied = try {
+                                srcFile.copyTo(dst, overwrite = true)
+                                dst.absolutePath
+                            } catch (e: Exception) {
+                                null
+                            }
+                            copied
+                        } else null
+                        val profile = SigningProfile(
+                            name = name,
+                            keystorePath = storedPath ?: srcPath,
+                            alias = signAlias,
+                            storePass = signStorePass,
+                            keyPass = signKeyPass
+                        )
+                        if (storedPath == null && profile.keystorePath.isEmpty()) {
+                            addLog("当前没有可用的 keystore，无法保存", LogType.WARNING)
+                            return@TextButton
+                        }
+                        val updated = savedSignings + profile
+                        savedSignings = updated
+                        saveSigningProfiles(prefs, updated)
+                        addLog("已保存签名预设: $name", LogType.SUCCESS)
+                        showSaveSigningDialog = false
+                    }
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveSigningDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 
     if (showSignInfoDialog) {
@@ -2302,6 +2750,44 @@ fun MainScreen() {
                                         val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                             runCatching {
                                                 val sf = File(path)
+                                                val bksOut = File(sf.parentFile ?: context.filesDir, sf.name.substringBeforeLast('.') + ".bks")
+                                                val ok = SigningTool.convertKeystoreFormat(
+                                                    sf, pass, alias.ifBlank { null }, bksOut, "BKS", pass, pass,
+                                                    srcKeyPass = pass
+                                                ) { e -> signToolConvertMsg = e }
+                                                if (ok) "转换为 BKS: ${bksOut.absolutePath}" else ""
+                                            }.getOrElse { e -> "失败: ${e.message}" }
+                                        }
+                                        signToolConvertOk = out.startsWith("转换为 BKS")
+                                        if (signToolConvertOk && out.isNotEmpty()) {
+                                            signKeystorePath = out.removePrefix("转换为 BKS: ")
+                                            signAlias = alias
+                                            signStorePass = pass
+                                            signKeyPass = pass
+                                            prefs.edit()
+                                                .putString("sign_keystore_path", signKeystorePath)
+                                                .putString("sign_alias", signAlias)
+                                                .putString("sign_store_pass", pass)
+                                                .putString("sign_key_pass", pass)
+                                                .apply()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(40.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("转 BKS 并设为签名密钥", fontSize = 12.sp)
+                            }
+                            Button(
+                                onClick = {
+                                    signToolConvertMsg = ""
+                                    val path = signToolKeystorePath
+                                    val pass = signToolStorePass
+                                    val alias = signToolAlias
+                                    scope.launch {
+                                        val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            runCatching {
+                                                val sf = File(path)
                                                 val p12Out = File(sf.parentFile ?: context.filesDir, sf.name.substringBeforeLast('.') + ".p12")
                                                 val ok = SigningTool.convertToP12(
                                                     sf, pass, alias.ifBlank { null }, p12Out, pass, pass
@@ -2325,33 +2811,34 @@ fun MainScreen() {
                             ) {
                                 Text("转 P12 并设为签名密钥", fontSize = 12.sp)
                             }
-                            Button(
-                                onClick = {
-                                    signToolConvertMsg = ""
-                                    val path = signToolKeystorePath
-                                    val pass = signToolStorePass
-                                    val alias = signToolAlias
-                                    scope.launch {
-                                        val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                            runCatching {
-                                                val sf = File(path)
-                                                val base = sf.name.substringBeforeLast('.').ifEmpty { sf.name }
-                                                val pk8Out = File(sf.parentFile ?: context.filesDir, "$base.pk8")
-                                                val pemOut = File(sf.parentFile ?: context.filesDir, "$base.x509.pem")
-                                                val ok = SigningTool.exportPk8Pem(
-                                                    sf, pass, alias.ifBlank { null }, pk8Out, pemOut
-                                                ) { e -> signToolConvertMsg = e }
-                                                if (ok) "导出 PK8/PEM:\n${pk8Out.absolutePath}\n${pemOut.absolutePath}" else ""
-                                            }.getOrElse { e -> "失败: ${e.message}" }
-                                        }
-                                        signToolConvertOk = out.startsWith("导出 PK8")
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                signToolConvertMsg = ""
+                                val path = signToolKeystorePath
+                                val pass = signToolStorePass
+                                val alias = signToolAlias
+                                scope.launch {
+                                    val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        runCatching {
+                                            val sf = File(path)
+                                            val base = sf.name.substringBeforeLast('.').ifEmpty { sf.name }
+                                            val pk8Out = File(sf.parentFile ?: context.filesDir, "$base.pk8")
+                                            val pemOut = File(sf.parentFile ?: context.filesDir, "$base.x509.pem")
+                                            val ok = SigningTool.exportPk8Pem(
+                                                sf, pass, alias.ifBlank { null }, pk8Out, pemOut
+                                            ) { e -> signToolConvertMsg = e }
+                                            if (ok) "导出 PK8/PEM:\n${pk8Out.absolutePath}\n${pemOut.absolutePath}" else ""
+                                        }.getOrElse { e -> "失败: ${e.message}" }
                                     }
-                                },
-                                modifier = Modifier.weight(1f).height(40.dp),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("导出 PK8/PEM", fontSize = 12.sp)
-                            }
+                                    signToolConvertOk = out.startsWith("导出 PK8")
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("导出 PK8/PEM", fontSize = 13.sp)
                         }
                         if (signToolConvertMsg.isNotEmpty()) {
                             Text(
@@ -3560,7 +4047,10 @@ private suspend fun processApk(
                     runCatching { outputFile.delete() }
                         .onFailure { addLog("清理旧输出文件失败: ${it.message}", LogType.WARNING) }
                 }
-                val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
+val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder(
+                    signAlias?.takeIf { it.isNotBlank() } ?: "adh",
+                    signKey, listOf(signCert)
+                ).build()
                 val signedTmp = File(context.cacheDir, "${baseName}_signed_${System.currentTimeMillis()}.apk")
                 val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
                     .setV1SigningEnabled(true)
@@ -4088,7 +4578,10 @@ private fun overlayProtectionLayer(
             return false
         }
         val signedTmp = File(context.cacheDir, "${outputFile.nameWithoutExtension}_signed_${System.currentTimeMillis()}.apk")
-        val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder("adh", signKey, listOf(signCert)).build()
+        val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder(
+            signAlias?.takeIf { it.isNotBlank() } ?: "adh",
+            signKey, listOf(signCert)
+        ).build()
         val apkSigner = com.android.apksig.ApkSigner.Builder(listOf(signerConfig))
             .setV1SigningEnabled(true)
             .setV2SigningEnabled(true)
@@ -4159,6 +4652,13 @@ private fun loadSigningKeyPair(
     storePass: CharArray,
     keyPass: CharArray
 ): Pair<PrivateKey, X509Certificate>? {
+    try {
+        if (java.security.Security.getProvider("BC") == null) {
+            java.security.Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+        }
+    } catch (t: Throwable) {
+        // BKS 分支不可用，仍可尝试 PKCS12/JKS
+    }
     val name = keystoreFile.name.lowercase()
 
     // pk8 / pem 形式（AOSP 平台签名）：.pk8 私钥 + 同名 .pem 证书
