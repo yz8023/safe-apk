@@ -111,27 +111,68 @@ private fun sanitizeFileName(name: String): String {
 }
 
 /**
- * 生成混淆字典：随机词条（含大写/小写/数字/下划线），导出为文本文件到系统下载目录。
+ * 混淆字典词根：用于「默认字典」模式，生成形似常见库/框架标识符的词条（可作类/方法/字段重命名参考）。
+ */
+private val DICT_STEMS = arrayOf(
+    "util", "core", "model", "view", "viewmodel", "widget", "layout", "resource", "config", "manager",
+    "helper", "adapter", "holder", "loader", "cache", "store", "task", "worker", "thread", "handler",
+    "callback", "listener", "observer", "provider", "consumer", "factory", "builder", "strategy",
+    "service", "controller", "repository", "database", "network", "socket", "http", "transport",
+    "security", "encrypt", "decrypt", "hash", "sign", "verify", "auth", "session", "token",
+    "image", "media", "audio", "video", "player", "render", "surface", "texture", "bitmap", "canvas",
+    "paint", "color", "font", "style", "theme", "animation", "transition", "gesture", "touch", "scroll",
+    "activity", "fragment", "dialog", "toast", "menu", "navigation", "router", "page", "screen", "window",
+    "recycler", "listener", "binder", "delegate", "dispatcher", "executor", "scheduler", "timer", "clock",
+    "metric", "report", "logger", "printer", "serializer", "parser", "converter", "transformer",
+    "filter", "matcher", "scanner", "tokenizer", "sorter", "searcher", "indexer", "compressor",
+    "packer", "unpacker", "encrypter", "decrypter", "signer", "verifier", "extractor", "importer"
+)
+
+private const val DEFAULT_DICT_COUNT = 200
+
+/**
+ * 混淆字典：默认模式用词根组合生成拟真词条；生成模式用随机字符词条。导出为文本文件到系统下载目录。
+ * @param useDefault true=默认词根组合，false=随机生成
  * @return 结果描述
  */
-private fun generateObfuscationDict(context: Context, count: Int, minLen: Int): String {
+private fun generateObfuscationDict(context: Context, count: Int, minLen: Int, useDefault: Boolean): String {
     return try {
-        val lower = "abcdefghijklmnopqrstuvwxyz".toCharArray()
-        val upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".toCharArray()
-        val digits = "0123456789".toCharArray()
-        val all = lower + upper + digits + '_'
         val random = java.security.SecureRandom()
         val words = LinkedHashSet<String>()
-        while (words.size < count) {
-            val length = minLen + random.nextInt(12)
-            val sb = StringBuilder(length)
-            for (i in 0 until length) sb.append(all[random.nextInt(all.size)])
-            words.add(sb.toString())
+        if (useDefault) {
+            var guard = 0
+            while (words.size < count && guard < count * 8) {
+                guard++
+                val parts = when (random.nextInt(3)) {
+                    0 -> arrayOf(DICT_STEMS[random.nextInt(DICT_STEMS.size)])
+                    1 -> arrayOf(DICT_STEMS[random.nextInt(DICT_STEMS.size)], DICT_STEMS[random.nextInt(DICT_STEMS.size)])
+                    else -> arrayOf(DICT_STEMS[random.nextInt(DICT_STEMS.size)], DICT_STEMS[random.nextInt(DICT_STEMS.size)], DICT_STEMS[random.nextInt(DICT_STEMS.size)])
+                }
+                val word = buildString {
+                    parts.forEachIndexed { idx, stem ->
+                        val base = if (idx == 0) stem else stem.replaceFirstChar { it.uppercase() }
+                        append(base)
+                    }
+                    if (random.nextInt(3) == 0) append(random.nextInt(1000))
+                }
+                if (word.length >= minLen) words.add(word)
+            }
+        } else {
+            val lower = "abcdefghijklmnopqrstuvwxyz".toCharArray()
+            val upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".toCharArray()
+            val digits = "0123456789".toCharArray()
+            val all = lower + upper + digits + '_'
+            while (words.size < count) {
+                val length = minLen + random.nextInt(12)
+                val sb = StringBuilder(length)
+                for (i in 0 until length) sb.append(all[random.nextInt(all.size)])
+                words.add(sb.toString())
+            }
         }
         val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(java.util.Date())
         val content = buildString {
             append("# obfuscation dictionary generated at $ts\n")
-            append("# count=$count minLen=$minLen\n")
+            append("# mode=${if (useDefault) "default" else "random"} count=${words.size} minLen=$minLen\n")
             for (w in words) append(w).append('\n')
         }
         val src = File(context.cacheDir, "obfuscation_dict_$ts.txt")
@@ -144,9 +185,9 @@ private fun generateObfuscationDict(context: Context, count: Int, minLen: Int): 
         val saved = OutputSettings.copyOutput(context, src, dest)
         src.delete()
         if (saved != null) {
-            "已生成 ${words.size} 个词条并导出: $saved"
+            "已生成 ${words.size} 个词条（${if (useDefault) "默认词根" else "随机"}）并导出: $saved"
         } else {
-            "已生成 ${words.size} 个词条，但导出失败"
+            "已生成 ${words.size} 个词条（${if (useDefault) "默认词根" else "随机"}），但导出失败"
         }
     } catch (e: Exception) {
         "字典生成失败: ${e.message}"
@@ -269,6 +310,7 @@ fun MainScreen() {
     var frostSoRandomization by remember { mutableStateOf(prefs.getBoolean("frost_so_randomization", false)) }
     var frostStringEncrypt by remember { mutableStateOf(prefs.getBoolean("frost_string_encrypt", false)) }
     var frostStringEncryptMinLen by remember { mutableStateOf(prefs.getInt("frost_string_encrypt_min_len", 6)) }
+    var codeObfExpanded by remember { mutableStateOf(false) }
     var showDictDialog by remember { mutableStateOf(false) }
     var dictGenerateCount by remember { mutableStateOf(200) }
     var dictGenerateMinLen by remember { mutableStateOf(6) }
@@ -834,36 +876,182 @@ fun MainScreen() {
 
                 Spacer(Modifier.height(8.dp))
 
+                // 代码混淆卡片（字符串加密 + 字典 + DEX pass 开关，设置页同步管理）
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { frostStringEncrypt = !frostStringEncrypt }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
-                        Spacer(Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("字符串加密", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                            Text(
-                                if (frostStringEncrypt) "中文字符串/URL 常量加密 (minLen=${frostStringEncryptMinLen})"
-                                else "对敏感字符串做 L1 混淆（配合 FrostShell 引擎）",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { codeObfExpanded = !codeObfExpanded }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("代码混淆", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "字符串加密 + DEX pass 混淆（点击${if (codeObfExpanded) "收起" else "展开"}配置）",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = frostStringEncrypt,
+                                onCheckedChange = {
+                                    frostStringEncrypt = it
+                                    prefs.edit().putBoolean("frost_string_encrypt", it).apply()
+                                }
                             )
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Switch(
-                            checked = frostStringEncrypt,
-                            onCheckedChange = {
-                                frostStringEncrypt = it
-                                prefs.edit().putBoolean("frost_string_encrypt", it).apply()
+                        if (codeObfExpanded) {
+                            Divider()
+                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("最小加密长度", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                                    OutlinedTextField(
+                                        value = frostStringEncryptMinLen.toString(),
+                                        onValueChange = { text ->
+                                            val v = text.toIntOrNull()
+                                            if (v != null && v > 0) {
+                                                frostStringEncryptMinLen = v
+                                                prefs.edit().putInt("frost_string_encrypt_min_len", v).apply()
+                                            }
+                                        },
+                                        modifier = Modifier.width(72.dp).height(44.dp),
+                                        singleLine = true,
+                                        textStyle = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                                Spacer(Modifier.height(2.dp))
+                                OutlinedButton(
+                                    onClick = { showDictDialog = true },
+                                    modifier = Modifier.fillMaxWidth().height(36.dp),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("混淆字典（默认 / 生成）", fontSize = 13.sp)
+                                }
+                                if (dictLastInfo.isNotEmpty()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        dictLastInfo,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text("代码混淆 (DEX pass)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                SettingRow(
+                                    icon = Icons.Default.Shuffle,
+                                    title = "类顺序打乱",
+                                    subtitle = "随机重排类定义 (class-shuffle)",
+                                    checked = frostClassShuffle,
+                                    onCheckedChange = {
+                                        frostClassShuffle = it
+                                        prefs.edit().putBoolean("frost_class_shuffle", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.Code,
+                                    title = "DEX 头部混淆",
+                                    subtitle = "填充 header 并重算 SHA-1/Adler32 (dex-header)",
+                                    checked = frostDexHeaderObfuscation,
+                                    onCheckedChange = {
+                                        frostDexHeaderObfuscation = it
+                                        prefs.edit().putBoolean("frost_dex_header_obfuscation", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.Delete,
+                                    title = "移除 Debug 信息",
+                                    subtitle = "剥离行号/局部变量 (debug-removal)",
+                                    checked = frostDebugRemoval,
+                                    onCheckedChange = {
+                                        frostDebugRemoval = it
+                                        prefs.edit().putBoolean("frost_debug_removal", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.South,
+                                    title = "Goto 插入混淆",
+                                    subtitle = "方法头插入无意义 goto 跳转 (goto-insertion)",
+                                    checked = frostGotoInsertion,
+                                    onCheckedChange = {
+                                        frostGotoInsertion = it
+                                        prefs.edit().putBoolean("frost_goto_insertion", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.Calculate,
+                                    title = "算术混淆",
+                                    subtitle = "ADD_INT 等价序列替换 + 假分支 (arithmetic)",
+                                    checked = frostArithmeticObfuscation,
+                                    onCheckedChange = {
+                                        frostArithmeticObfuscation = it
+                                        prefs.edit().putBoolean("frost_arithmetic_obfuscation", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.Router,
+                                    title = "控制流混淆",
+                                    subtitle = "方法头部拓宽与 goto 干扰 (control-flow)",
+                                    checked = frostControlFlow,
+                                    onCheckedChange = {
+                                        frostControlFlow = it
+                                        prefs.edit().putBoolean("frost_control_flow", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.Call,
+                                    title = "调用间接化",
+                                    subtitle = "方法入口注入间接跳转 (call-indirection)",
+                                    checked = frostCallIndirection,
+                                    onCheckedChange = {
+                                        frostCallIndirection = it
+                                        prefs.edit().putBoolean("frost_call_indirection", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.Layers,
+                                    title = "方法重载混淆",
+                                    subtitle = "注入同签名 dummy 方法 (method-overload)",
+                                    checked = frostMethodOverload,
+                                    onCheckedChange = {
+                                        frostMethodOverload = it
+                                        prefs.edit().putBoolean("frost_method_overload", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.DriveFileRenameOutline,
+                                    title = "字段重命名",
+                                    subtitle = "非敏感字段随机改名，引用精确重映射 (field-rename)",
+                                    checked = frostFieldRename,
+                                    onCheckedChange = {
+                                        frostFieldRename = it
+                                        prefs.edit().putBoolean("frost_field_rename", it).apply()
+                                    }
+                                )
+                                SettingRow(
+                                    icon = Icons.Default.Category,
+                                    title = "类重命名",
+                                    subtitle = "跨 dex 全局类名随机化，引用/字符串反射保护同步重映射 (class-rename)",
+                                    checked = frostClassRename,
+                                    onCheckedChange = {
+                                        frostClassRename = it
+                                        prefs.edit().putBoolean("frost_class_rename", it).apply()
+                                    }
+                                )
+                                Spacer(Modifier.height(6.dp))
                             }
-                        )
+                        }
                     }
                 }
 
@@ -1707,70 +1895,6 @@ fun MainScreen() {
                     }
                 )
                 SettingRow(
-                    icon = Icons.Default.Lock,
-                    title = "字符串加密",
-                    subtitle = "敏感字符串加密 (L1 string-encrypt)",
-                    checked = frostStringEncrypt,
-                    onCheckedChange = {
-                        frostStringEncrypt = it
-                        prefs.edit().putBoolean("frost_string_encrypt", it).apply()
-                    }
-                )
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "最小加密长度",
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.weight(1f)
-                            )
-                            OutlinedTextField(
-                                value = frostStringEncryptMinLen.toString(),
-                                onValueChange = { text ->
-                                    val v = text.toIntOrNull()
-                                    if (v != null && v > 0) {
-                                        frostStringEncryptMinLen = v
-                                        prefs.edit().putInt("frost_string_encrypt_min_len", v).apply()
-                                    }
-                                },
-                                modifier = Modifier.width(72.dp).height(44.dp),
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "≥该长度的中文字符串一定加密；同时生成的最小随机词条长度",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedButton(
-                            onClick = { showDictDialog = true },
-                            modifier = Modifier.fillMaxWidth().height(36.dp),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("生成混淆字典", fontSize = 13.sp)
-                        }
-                        if (dictLastInfo.isNotEmpty()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                dictLastInfo,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-                SettingRow(
                     icon = Icons.Default.FavoriteBorder,
                     title = "仅抽取指定函数",
                     subtitle = if (frostMethodFilterEnabled) {
@@ -1790,108 +1914,7 @@ fun MainScreen() {
                     }
                 )
                 Spacer(Modifier.height(8.dp))
-                Text("代码混淆 (DEX pass，从 ArkProtector 移植)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(4.dp))
-                SettingRow(
-                    icon = Icons.Default.Shuffle,
-                    title = "类顺序打乱",
-                    subtitle = "随机重排类定义 (class-shuffle)",
-                    checked = frostClassShuffle,
-                    onCheckedChange = {
-                        frostClassShuffle = it
-                        prefs.edit().putBoolean("frost_class_shuffle", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Code,
-                    title = "DEX 头部混淆",
-                    subtitle = "填充 header 并重算 SHA-1/Adler32 (dex-header)",
-                    checked = frostDexHeaderObfuscation,
-                    onCheckedChange = {
-                        frostDexHeaderObfuscation = it
-                        prefs.edit().putBoolean("frost_dex_header_obfuscation", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Delete,
-                    title = "移除 Debug 信息",
-                    subtitle = "剥离行号/局部变量 (debug-removal)",
-                    checked = frostDebugRemoval,
-                    onCheckedChange = {
-                        frostDebugRemoval = it
-                        prefs.edit().putBoolean("frost_debug_removal", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.South,
-                    title = "Goto 插入混淆",
-                    subtitle = "方法头插入无意义 goto 跳转 (goto-insertion)",
-                    checked = frostGotoInsertion,
-                    onCheckedChange = {
-                        frostGotoInsertion = it
-                        prefs.edit().putBoolean("frost_goto_insertion", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Calculate,
-                    title = "算术混淆",
-                    subtitle = "ADD_INT 等价序列替换 + 假分支 (arithmetic)",
-                    checked = frostArithmeticObfuscation,
-                    onCheckedChange = {
-                        frostArithmeticObfuscation = it
-                        prefs.edit().putBoolean("frost_arithmetic_obfuscation", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Router,
-                    title = "控制流混淆",
-                    subtitle = "方法头部拓宽与 goto 干扰 (control-flow)",
-                    checked = frostControlFlow,
-                    onCheckedChange = {
-                        frostControlFlow = it
-                        prefs.edit().putBoolean("frost_control_flow", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Call,
-                    title = "调用间接化",
-                    subtitle = "方法入口注入间接跳转 (call-indirection)",
-                    checked = frostCallIndirection,
-                    onCheckedChange = {
-                        frostCallIndirection = it
-                        prefs.edit().putBoolean("frost_call_indirection", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Layers,
-                    title = "方法重载混淆",
-                    subtitle = "注入同签名 dummy 方法 (method-overload)",
-                    checked = frostMethodOverload,
-                    onCheckedChange = {
-                        frostMethodOverload = it
-                        prefs.edit().putBoolean("frost_method_overload", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.DriveFileRenameOutline,
-                    title = "字段重命名",
-                    subtitle = "非敏感字段随机改名，引用精确重映射 (field-rename)",
-                    checked = frostFieldRename,
-                    onCheckedChange = {
-                        frostFieldRename = it
-                        prefs.edit().putBoolean("frost_field_rename", it).apply()
-                    }
-                )
-                SettingRow(
-                    icon = Icons.Default.Category,
-                    title = "类重命名",
-                    subtitle = "跨 dex 全局类名随机化，引用/字符串反射保护同步重映射 (class-rename)",
-                    checked = frostClassRename,
-                    onCheckedChange = {
-                        frostClassRename = it
-                        prefs.edit().putBoolean("frost_class_rename", it).apply()
-                    }
-                )
+                Text("代码混淆（字符串加密与 DEX pass 开关请在首页「代码混淆」卡片中管理）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
                 Text("剔除 ABI（未勾选的将保留）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -2097,16 +2120,29 @@ fun MainScreen() {
     }
 
     if (showDictDialog) {
+        var dictUseDefault by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showDictDialog = false },
-            title = { Text("生成混淆字典") },
+            title = { Text("混淆字典") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "生成一组随机词条（大小写字母+数字+下划线），可作类/方法/字段重命名或字符串填充参考。生成后导出为文本字典到系统下载目录。",
+                        "生成可作类/方法/字段重命名或字符串填充参考的词典，导出为文本字典到系统下载目录。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = !dictUseDefault,
+                            onClick = { dictUseDefault = false },
+                            label = { Text("默认配置（词根组合）", fontSize = 12.sp) }
+                        )
+                        FilterChip(
+                            selected = dictUseDefault,
+                            onClick = { dictUseDefault = true },
+                            label = { Text("生成配置（随机词条）", fontSize = 12.sp) }
+                        )
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("词条数量", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                         OutlinedTextField(
@@ -2144,7 +2180,7 @@ fun MainScreen() {
                         scope.launch {
                             val count = dictGenerateCount.coerceIn(10, 10000)
                             val minLen = dictGenerateMinLen.coerceIn(2, 32)
-                            val info = withContext(Dispatchers.IO) { generateObfuscationDict(context, count, minLen) }
+                            val info = withContext(Dispatchers.IO) { generateObfuscationDict(context, count, minLen, dictUseDefault) }
                             dictLastInfo = info
                         }
                     }
