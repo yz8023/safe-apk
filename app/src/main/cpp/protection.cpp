@@ -441,18 +441,19 @@ static bool isTrustedProtectionActive() {
 static bool hookCheckXposed() {
     const char *maps = readMapsCached();
     if (!maps) return false;
+    // 注意：不匹配 riru/zygisk——它们是注入框架本身的全局特征（注入 zygote，装了就存在于
+    // 所有进程 maps），不代表当前 app 被 hook，会误杀未勾选的应用。
     return strstr(maps, "XposedBridge") || strstr(maps, "edxp") ||
            strstr(maps, "sandhook") || strstr(maps, "libxposed") ||
-           strstr(maps, "edxposed") || strstr(maps, "lspd") ||
-           strstr(maps, "riru") || strstr(maps, "zygisk");
+           strstr(maps, "edxposed") || strstr(maps, "lspd");
 }
 static bool scanMemoryForHookPatterns() {
     const char *maps = readMapsCached();
     if (!maps) return false;
+    // 不匹配 riru/zygisk：注入框架全局特征，非当前 app 被 hook 的证据
     return strstr(maps, "frida") || strstr(maps, "gum-js") ||
            strstr(maps, "linjector") || strstr(maps, "libgadget") ||
-           strstr(maps, "xposed") || strstr(maps, "lsposed") ||
-           strstr(maps, "riru") || strstr(maps, "zygisk");
+           strstr(maps, "xposed") || strstr(maps, "lsposed");
 }
 static bool detectLibcHook() {
     if (isTrustedProtectionActive()) return false;
