@@ -157,3 +157,12 @@ Entries discovered by the Agent during task execution should follow this format:
   - BKS 依赖 BouncyCastle：bcprov-jdk15on-1.67.jar 已放 app/libs 并在 build.gradle.kts 用 implementation(files(...)) 引入；SigningTool 静态块 Security.addProvider(BouncyCastleProvider())。JKS 在 Android/JVM 的 JSSE 无 provider，只能走自实现 JksParser；PKCS12/BKS 走 KeyStore API。
   - generateKeystore 用 spec.keyPass 加密 key entry，而 loadSignatureKey 默认把 storePass 兼作 keyPass；密码分离（storePass≠keyPass）时读取/转换必须显式传 keyPass/srcKeyPass，否则报"无法读取密钥"。转换通用入口 convertKeystoreFormat(file, storePass, aliasHint, outFile, targetType, newStorePass, newKeyPass, srcKeyPass=null, onError)，onError 是最后一个参数；convertToP12 委托它。
   - 探针验证 classpath：kotlin-classes-debug + ironshell-deps.jar + bcprov-jdk15on-1.67.jar + kotlin-stdlib；JVM 直驱需 /tmp/mockstub 提供 android.* 与 org.json Stub（SharedPreferences/Context 环境没有真实实现，UI 层 JSON 序列化用 SignProfileProbe 验证）。
+
+[Project Knowledge Summary]
+- Date: 2026-09-10
+- Context: Discovered by Agent while fixing v9.10.32 Flutter 应用（cn.ikaile.ruoshui.client）全功能加固启动即崩
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - Flutter 加固必须无条件保护 `io.flutter.*`：libflutter.so 引擎 native 与 libapp.so Dart AOT 按**类名字符串** FindClass/lookupClass 定位引擎类与插件注册类（GeneratedPluginRegistrant 等），DEX 类重命名/字段改名/方法抽取都会让 FindClass 返回 null 或导致 JNI 状态异常 → 启动即崩（本例为 libdartjni.so FindClassUnchecked x0=0 + "JNI is not initialized...during Dart plugin class registration"）。类重命名 PROTECTED_PREFIXES 加 `Lio/flutter/` 是硬性防线；FrostProtectRules.excludeRules 加 `Lio/flutter/.*` 覆盖字段重命名/方法抽取/L2 混淆各 pass；setExcludeRules 被用户规则文件整体覆盖时必须强制合并该条，否则配置能绕过保护。
+  - Flutter 场景下字符串加密/算术混淆等字节码等价变换是安全的，唯一高危点是任何**按名解析**的 native/Dart 桥：除 io.flutter.* 外，package:jni 等 FFI 插件的 Java 类若被重命名，其 Dart 端 JNI.lookupClass 也会失败——需要用户在规则文件里给具体插件包前缀补 keep。
+  - 回归法：javac --release 8 + com.android.dx.command.Main（ironshell-deps.jar 内含）把含 io.flutter.* 与应用类的源码转成 classes.dex（文件名必须匹配 classes(\d*)\.dex，否则 getDexNumber=-1 被过滤），再驱动 buildClassRenameMap 断言 io.flutter 不进 map、应用类进 map、处理后 FlutterJNI 类名原样保留且 dex 可加载。
