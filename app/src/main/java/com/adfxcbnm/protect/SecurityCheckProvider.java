@@ -508,12 +508,14 @@ public class SecurityCheckProvider extends ContentProvider {
             if (xposedClassLoaded(S.t(S.xposed_helpers_class))) return true;
         } catch (Throwable ignored) {}
         // 2) maps 特征：库文件名（老版 Xposed/EdXposed/SandHook/Dreamland），
-        //    LSPosed（Zygisk/Riru/LSPosed loader 的 so 名）。
+        //    LSPosed loader 的 so 名。注意：不匹配 zygisk/riru——它们是注入框架本身
+        //    的全局特征（注入 zygote，装了就存在于所有进程 maps），不代表当前 app
+        //    被 hook，会误杀未勾选的应用。
         try {
             String maps = readMapsCached();
             for (String lib : new String[]{
                 S.t(S.XposedBridge), S.t(S.edxp), S.t(S.sandhook), S.t(S.libxposed),
-                S.t(S.lspd), S.t(S.riru), S.t(S.libxposed_art), S.t(S.libxposed_lite), S.t(S.zygisk)
+                S.t(S.lspd), S.t(S.libxposed_art), S.t(S.libxposed_lite)
             }) {
                 if (maps.contains(lib)) return true;
             }
@@ -540,7 +542,7 @@ public class SecurityCheckProvider extends ContentProvider {
     private static boolean detectHookLibs() {
         try {
             String maps = readMapsCached();
-            for (String lib : new String[]{S.t(S.XposedBridge), S.t(S.edxp), S.t(S.sandhook), S.t(S.libxposed), S.t(S.libsubstrate), S.t(S.libwhale), S.t(S.libdreamland), S.t(S.lspd), S.t(S.riru), S.t(S.zygisk)}) {
+            for (String lib : new String[]{S.t(S.XposedBridge), S.t(S.edxp), S.t(S.sandhook), S.t(S.libxposed), S.t(S.libsubstrate), S.t(S.libwhale), S.t(S.libdreamland), S.t(S.lspd)}) {
                 if (maps.contains(lib)) return true;
             }
         } catch (Throwable ignored) {}
