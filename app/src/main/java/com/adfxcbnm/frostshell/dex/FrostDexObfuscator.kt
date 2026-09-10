@@ -31,6 +31,7 @@ import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstructio
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21t
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction23x
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction31i
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction32x
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableFieldReference
 import com.android.tools.smali.dexlib2.immutable.value.ImmutableAnnotationEncodedValue
 import com.android.tools.smali.dexlib2.immutable.value.ImmutableArrayEncodedValue
@@ -486,7 +487,14 @@ object FrostDexObfuscator {
                     val const1 = makeConst(vT, 1)
                     val insertLen = const0.codeUnits + 2 + const1.codeUnits + 1
                     val ifOffset = 2 + const1.codeUnits + 1
-                    val head = ArrayList<Instruction>(4)
+                    val newRegCount = vT + 1
+                    // 寄存器帧顶部新增 vT 后，Dalvik 会按 ins_start = registers_size - ins_size 重新锚定
+                    // 参数寄存器：原 body 中对参数寄存器的绝对索引全部错位（参数被推高 delta 槽）。
+                    // 必须在头部插入参数搬移（先搬移、后写 vT），把参数从新位置复制回原位置，
+                    // 否则运行期取到错误寄存器 → 空指针/垃圾值（v9.10.30 SIGSEGV pc=0 根因）。
+                    val moves = buildParamMoves(method, regCount, newRegCount)
+                    val head = ArrayList<Instruction>(4 + moves.size)
+                    head.addAll(moves)
                     head.add(const0)
                     head.add(ImmutableInstruction21t(Opcode.IF_EQZ, vT, ifOffset))
                     head.add(const1)
@@ -498,20 +506,56 @@ object FrostDexObfuscator {
                     return ImmutableMethod(
                         method.definingClass, method.name, method.parameters, method.returnType,
                         method.accessFlags, method.annotations, method.hiddenApiRestrictions,
-                        ImmutableMethodImplementation(vT + 1, finalInsns, shiftedTb, impl.debugItems)
+                        ImmutableMethodImplementation(newRegCount, finalInsns, shiftedTb, impl.debugItems)
                     )
                 }
             }
         }
         if (curRegCount != regCount) {
-            // 仅 ADD_INT 替换生效：寄存器数 +1，无头插入，try 块不变（已排除含 try 的方法）
+            // 仅 ADD_INT 替换生效：寄存器数 +1，无分支头插入，try 块不变（已排除含 try 的方法）。
+            // 与分支路径同理，参数被推高 1 槽，需在头部搬移回原位。
+            val moves = buildParamMoves(method, regCount, curRegCount)
+            val finalInsns = ArrayList<Instruction>(moves.size + newInsns.size)
+            finalInsns.addAll(moves)
+            finalInsns.addAll(newInsns)
             return ImmutableMethod(
                 method.definingClass, method.name, method.parameters, method.returnType,
                 method.accessFlags, method.annotations, method.hiddenApiRestrictions,
-                ImmutableMethodImplementation(curRegCount, newInsns, impl.tryBlocks, impl.debugItems)
+                ImmutableMethodImplementation(curRegCount, finalInsns, impl.tryBlocks, impl.debugItems)
             )
         }
         return null
+    }
+
+    /**
+     * 构建参数搬移指令：寄存器帧顶部新增 [delta] 个寄存器后，参数寄存器整体上移 delta 槽。
+     * 按 Dalvik 布局从低位到高位依次把参数复制回原位置（dst=origRegCount-paramSlots+slot，
+     * src=origRegCount+delta-paramSlots+slot），保证后续 body 对参数寄存器的绝对索引引用仍有效。
+     * 逐槽升序搬移是安全的：src 严格大于所有已写入的 dst，不会读到被覆盖的值。
+     * this 计 1 槽（非 static），J/D 宽参数计 2 槽（move-wide/16）。
+     */
+    private fun buildParamMoves(method: Method, origRegCount: Int, newRegCount: Int): List<Instruction> {
+        if (newRegCount <= origRegCount) return emptyList()
+        val paramSlots = paramRegisterCount(method)
+        if (paramSlots == 0) return emptyList()
+        val delta = newRegCount - origRegCount
+        val moves = ArrayList<Instruction>()
+        var slot = 0
+        if ((method.accessFlags and 0x8) == 0) {
+            moves.add(ImmutableInstruction32x(Opcode.MOVE_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
+            slot++
+        }
+        for (paramType in method.parameters) {
+            val wide = paramType.isNotEmpty() && (paramType[0] == 'J' || paramType[0] == 'D')
+            if (wide) {
+                moves.add(ImmutableInstruction32x(Opcode.MOVE_WIDE_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
+                slot += 2
+            } else {
+                moves.add(ImmutableInstruction32x(Opcode.MOVE_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
+                slot++
+            }
+        }
+        return moves
     }
 
     private fun paramRegisterCount(method: Method): Int {
