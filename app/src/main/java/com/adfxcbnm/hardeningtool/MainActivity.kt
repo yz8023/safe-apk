@@ -456,7 +456,6 @@ fun MainScreen() {
     var savedSigningNameInput by remember { mutableStateOf("") }
     var renameSigningTarget by remember { mutableStateOf<SigningProfile?>(null) }
     var renameSigningNameInput by remember { mutableStateOf("") }
-    var showSignConvertDialog by remember { mutableStateOf(false) }
     var signConvertTarget by remember { mutableStateOf<SigningProfile?>(null) }
     var signConvertFormat by remember { mutableStateOf("BKS") }
     var showHistoryDialog by remember { mutableStateOf(false) }
@@ -704,7 +703,7 @@ fun MainScreen() {
         val sb = StringBuilder()
         sb.appendLine("== 加固工具配置导出 ==")
         sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-        sb.appendLine("版本: 9.10.33 (versionCode 75)")
+        sb.appendLine("版本: 9.10.34 (versionCode 76)")
         sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
         sb.appendLine()
         sb.appendLine("[引擎]")
@@ -2683,7 +2682,7 @@ fun MainScreen() {
                                                     signConvertInfo = null
                                                     signConvertMsg = ""
                                                     signConvertOk = false
-                                                    showSignConvertDialog = true
+                                                    signConvertTarget = profile
                                                     addLog("打开签名格式转换: ${profile.name}", LogType.INFO)
                                                 }
                                             ).padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2735,7 +2734,7 @@ fun MainScreen() {
                                                     signConvertInfo = null
                                                     signConvertMsg = ""
                                                     signConvertOk = false
-                                                    showSignConvertDialog = true
+                                                    signConvertTarget = profile
                                                 }
                                             ) {
                                                 Icon(
@@ -3238,7 +3237,7 @@ fun MainScreen() {
             signConvertLoading = false
         }
         AlertDialog(
-            onDismissRequest = { showSignConvertDialog = false },
+            onDismissRequest = { signConvertTarget = null },
             title = { Text("格式转换 — ${target.name}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3384,6 +3383,7 @@ fun MainScreen() {
                                 } else {
                                     addLog("格式转换完成: $result", LogType.SUCCESS)
                                 }
+                                signConvertTarget = null
                             } else {
                                 signConvertMsg = result
                             }
@@ -3400,7 +3400,7 @@ fun MainScreen() {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showSignConvertDialog = false }) {
+                TextButton(onClick = { signConvertTarget = null }) {
                     Text("关闭")
                 }
             }
