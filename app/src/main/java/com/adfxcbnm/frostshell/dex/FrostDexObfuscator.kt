@@ -528,11 +528,17 @@ object FrostDexObfuscator {
     }
 
     /**
-     * 构建参数搬移指令：寄存器帧顶部新增 [delta] 个寄存器后，参数寄存器整体上移 delta 槽。
+     * 构建参数搬移指令：寄存器帧顶部新增 delta 个寄存器后，参数寄存器整体上移 delta 槽。
      * 按 Dalvik 布局从低位到高位依次把参数复制回原位置（dst=origRegCount-paramSlots+slot，
      * src=origRegCount+delta-paramSlots+slot），保证后续 body 对参数寄存器的绝对索引引用仍有效。
      * 逐槽升序搬移是安全的：src 严格大于所有已写入的 dst，不会读到被覆盖的值。
      * this 计 1 槽（非 static），J/D 宽参数计 2 槽（move-wide/16）。
+     *
+     * 指令选择必须区分类型：引用（this、L 前缀、数组前缀参数）用 MOVE_OBJECT_16，int/float 用 MOVE_16，
+     * 宽用 MOVE_WIDE_16。ART 的 VerifyCopyCat1 只接受 cat1 int/float/缓存引用，
+     * 对精确引用类型（如 this 的具体类）用 move 会直接 VerifyError
+     * （报错形如 "Verifier rejected class ... copy-cat1 vX<-vY type=Reference: <class>"），
+     * 必须走 VerifyCopyReference 的 move-object 系列。
      */
     private fun buildParamMoves(method: Method, origRegCount: Int, newRegCount: Int): List<Instruction> {
         if (newRegCount <= origRegCount) return emptyList()
@@ -542,14 +548,18 @@ object FrostDexObfuscator {
         val moves = ArrayList<Instruction>()
         var slot = 0
         if ((method.accessFlags and 0x8) == 0) {
-            moves.add(ImmutableInstruction32x(Opcode.MOVE_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
+            moves.add(ImmutableInstruction32x(Opcode.MOVE_OBJECT_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
             slot++
         }
         for (paramType in method.parameters) {
             val wide = paramType.isNotEmpty() && (paramType[0] == 'J' || paramType[0] == 'D')
+            val ref = paramType.isNotEmpty() && (paramType[0] == 'L' || paramType[0] == '[')
             if (wide) {
                 moves.add(ImmutableInstruction32x(Opcode.MOVE_WIDE_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
                 slot += 2
+            } else if (ref) {
+                moves.add(ImmutableInstruction32x(Opcode.MOVE_OBJECT_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
+                slot++
             } else {
                 moves.add(ImmutableInstruction32x(Opcode.MOVE_16, origRegCount - paramSlots + slot, origRegCount + delta - paramSlots + slot))
                 slot++
