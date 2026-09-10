@@ -443,7 +443,8 @@ static bool hookCheckXposed() {
     if (!maps) return false;
     return strstr(maps, "XposedBridge") || strstr(maps, "edxp") ||
            strstr(maps, "sandhook") || strstr(maps, "libxposed") ||
-           strstr(maps, "edxposed");
+           strstr(maps, "edxposed") || strstr(maps, "lspd") ||
+           strstr(maps, "riru") || strstr(maps, "zygisk");
 }
 static bool scanMemoryForHookPatterns() {
     const char *maps = readMapsCached();
