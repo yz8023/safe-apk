@@ -24,7 +24,8 @@ object MethodRuleTemplate {
         "vip", "data", "info", "time", "login", "premium",
         "auth", "token", "user", "account", "password", "secret",
         "key", "encrypt", "decrypt", "sign", "verify", "pay",
-        "check", "config", "session", "profile", "member", "admin"
+        "check", "config", "session", "profile", "member", "admin",
+        "onClick", "click", "isVip", "isVIP", "isvip", "isLogin", "isLogined", "islogin"
     )
 
     /** 内置方案列表（不可删除，可加载）。 */
@@ -32,6 +33,10 @@ object MethodRuleTemplate {
         builtinPreset(
             "会员/VIP 核心",
             buildKeywordRules(listOf("vip", "premium", "member", "auth", "token"))
+        ),
+        builtinPreset(
+            "点击与会员判断",
+            buildKeywordRules(listOf("onClick", "click", "isVip", "isVIP", "isLogin", "isLogined", "premium", "member"))
         ),
         builtinPreset(
             "敏感业务常用",
@@ -66,15 +71,17 @@ object MethodRuleTemplate {
      * - `Lcom/foo/Bar;.methodName` 精确类+方法
      * - `Lcom/foo/Bar;.*` 类下全部方法
      * - `Lcom/foo/.*;.onCreate` 类名正则+方法名精确
+     * - `.method public static onClick(I)V` smali 格式，方法名+签名精确匹配
      * - `regex:<正则>` 完全正则匹配（匹配对象为 类名.方法名）
      */
     val FORMAT_HELP = """
-        内置关键词方案已自动生成(如 .*vip.*)，直接"保存"即可使用。
+        内置关键词方案已自动生成(如 .*vip.*、.*isVip.*、.*onClick.*)，直接"保存"即可使用。
         高级格式(每行一条)：
-            Lcom/foo/Bar;.methodName      精确
-            Lcom/foo/Bar;.*               类下全部
-            Lcom/foo/.*;.onCreate         类名正则
-            regex:.+(auth|login).+        完全正则
+            Lcom/foo/Bar;.methodName           精确类+方法
+            Lcom/foo/Bar;.*                    类下全部
+            Lcom/foo/.*;.onCreate              类名正则
+            .method public static onClick(I)V  smali格式(方法名+签名精确匹配)，可省略签名为仅方法名
+            regex:.+(auth|login).+             完全正则
         留空 = 全量抽取。
     """.trimIndent()
 

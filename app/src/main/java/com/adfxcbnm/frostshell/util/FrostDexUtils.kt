@@ -227,7 +227,7 @@ object FrostDexUtils {
                         FrostLogUtils.noisy("codeoff 0x%x appear many times", method.codeOffset)
                         continue
                     }
-                    if (!FrostProtectRules.getInstance().shouldExtractMethod(className, dex.strings()[dex.methodIds()[method.methodIndex].nameIndex])) {
+                    if (!FrostProtectRules.getInstance().shouldExtractMethod(className, dex.strings()[dex.methodIds()[method.methodIndex].nameIndex], resolveMethodDescriptor(dex, method))) {
                         FrostLogUtils.noisy(
                             "method not matched, name = %s.%s (按规则保留原始指令)",
                             FrostTypeUtils.getHumanizeTypeName(className),
@@ -260,6 +260,26 @@ object FrostDexUtils {
             dumpJSON(packageName, dexFile, dumpJSON)
         }
         return instructionList
+    }
+
+    /**
+     * 由 dex 方法解析出完整 descriptor："(Ljava/lang/String;I)V"（参数类型+返回类型）。
+     * 用于 `.method` 签名规则的精确匹配。
+     */
+    private fun resolveMethodDescriptor(dex: Dex, method: ClassData.Method): String {
+        return try {
+            val methodId = dex.methodIds()[method.methodIndex]
+            val protoId = dex.protoIds()[methodId.protoIndex]
+            val params = if (protoId.parametersOffset == 0) {
+                ""
+            } else {
+                dex.readTypeList(protoId.parametersOffset).types.joinToString("") { dex.typeNames()[it.toInt()] }
+            }
+            val returnType = dex.typeNames()[protoId.returnTypeIndex]
+            "($params)$returnType"
+        } catch (e: Exception) {
+            ""
+        }
     }
 
     private fun dumpJSON(packageName: String, originFile: File, array: JSONArray) {

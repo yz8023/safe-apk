@@ -227,4 +227,90 @@ object SoNameDisguiser {
             method.accessFlags, method.annotations, method.hiddenApiRestrictions, newImpl
         )
     }
+
+    /**
+     * 通用改写入口：把 dex 中所有值完全等于 oldValue 的 const-string 常量替换为 newValue。
+     * 兼容 loadLibrary("security_check") 这类裸串（无 lib 前缀 / .so 后缀，不匹配 LIB_REF_PATTERN）。
+     * 返回改写后的 dex 字节；无命中或改写失败返回 null（调用方回退原字节与原名）。
+     */
+    fun rewriteDexString(dexBytes: ByteArray, oldValue: String, newValue: String): ByteArray? {
+        if (oldValue.isEmpty() || oldValue == newValue) return null
+        val tmp = File.createTempFile("secchk", ".dex")
+        return try {
+            tmp.writeBytes(dexBytes)
+            val opcodes = Opcodes.getDefault()
+            val dex = DexFileFactory.loadDexFile(tmp, opcodes)
+            val newClasses = ArrayList<ClassDef>()
+            var anyDirty = false
+            for (classDef in dex.classes) {
+                var classDirty = false
+                val newDirect = ArrayList<Method>()
+                for (m in classDef.directMethods) {
+                    val r = rewriteMethodString(m, oldValue, newValue)
+                    if (r !== m) classDirty = true
+                    newDirect.add(r)
+                }
+                val newVirtual = ArrayList<Method>()
+                for (m in classDef.virtualMethods) {
+                    val r = rewriteMethodString(m, oldValue, newValue)
+                    if (r !== m) classDirty = true
+                    newVirtual.add(r)
+                }
+                if (classDirty) anyDirty = true
+                newClasses.add(if (classDirty) RewrittenClassDef(classDef, newDirect, newVirtual) else classDef)
+            }
+            if (!anyDirty) return null
+            DexFileFactory.writeDexFile(tmp.absolutePath, RewrittenDexFile(dex.opcodes, newClasses))
+            tmp.readBytes()
+        } catch (e: Exception) {
+            null
+        } finally {
+            tmp.delete()
+        }
+    }
+
+    private fun rewriteMethodString(method: Method, oldValue: String, newValue: String): Method {
+        val impl = method.implementation ?: return method
+        val newInstructions = ArrayList<Instruction>()
+        var methodDirty = false
+        for (instruction in impl.instructions) {
+            if (instruction !is ReferenceInstruction || instruction !is OneRegisterInstruction) {
+                newInstructions.add(instruction)
+                continue
+            }
+            val reference = instruction.reference
+            if (reference !is StringReference || reference.string != oldValue) {
+                newInstructions.add(instruction)
+                continue
+            }
+            methodDirty = true
+            val insnOpcode = (instruction as Instruction).opcode
+            val replacement: Instruction = when (insnOpcode) {
+                com.android.tools.smali.dexlib2.Opcode.CONST_STRING_JUMBO ->
+                    ImmutableInstruction31c(
+                        com.android.tools.smali.dexlib2.Opcode.CONST_STRING_JUMBO,
+                        instruction.registerA,
+                        ImmutableStringReference(newValue)
+                    )
+                else ->
+                    ImmutableInstruction21c(
+                        com.android.tools.smali.dexlib2.Opcode.CONST_STRING,
+                        instruction.registerA,
+                        ImmutableStringReference(newValue)
+                    )
+            }
+            newInstructions.add(replacement)
+        }
+        if (!methodDirty) return method
+        val newImpl = ImmutableMethodImplementation(
+            impl.registerCount,
+            newInstructions,
+            impl.tryBlocks,
+            impl.debugItems
+        )
+        return ImmutableMethod(
+            method.definingClass, method.name, method.parameters, method.returnType,
+            method.accessFlags, method.annotations, method.hiddenApiRestrictions, newImpl
+        )
+    }
 }

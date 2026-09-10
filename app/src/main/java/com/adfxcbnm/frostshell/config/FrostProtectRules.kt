@@ -2,6 +2,18 @@ package com.adfxcbnm.frostshell.config
 
 object FrostProtectRules {
 
+    private val ACCESS_MODIFIERS = setOf(
+        "public", "private", "protected", "static", "final", "synthetic",
+        "native", "abstract", "synchronized", "strictfp", "constructor",
+        "declared-synchronized", "bridge", "varargs", "default"
+    )
+
+    private data class ParsedMethodRule(
+        val className: String?, // null 表示任意类
+        val methodName: String,
+        val descriptor: String // "" 表示未指定签名，仅按方法名匹配
+    )
+
     /**
      * 方法与字段匹配规则。格式: "类全限定名.成员名" 或 "类全限定名.*"，
      * 类名使用 dex 内部格式如 "Lcom/foo/Bar;"。
@@ -16,14 +28,29 @@ object FrostProtectRules {
     /**
      * 方法级抽取过滤。为空则全部方法都参与抽取（保持原行为）；
      * 非空时只有命中的方法才被抽取，未命中的方法保留原始指令（不进入指令池）。
+     *
+     * 支持 smali `.method` 签名格式（方法名+签名精确匹配），如：
+     *   .method public static onClick(I)V
+     * 含签名的规则要求方法 descriptor（"(I)V"）完全一致；未含签名时仅按方法名匹配。
      */
     @Synchronized fun shouldExtractMethod(className: String, methodName: String): Boolean {
-        if (memberRules.isEmpty()) return true
-        return matchesMemberRule(className, methodName)
+        return shouldExtractMethod(className, methodName, "")
     }
 
-    private fun matchesMemberRule(className: String, methodName: String): Boolean {
+    @Synchronized fun shouldExtractMethod(className: String, methodName: String, methodDescriptor: String): Boolean {
+        if (memberRules.isEmpty()) return true
+        return matchesMemberRule(className, methodName, methodDescriptor)
+    }
+
+    private fun matchesMemberRule(className: String, methodName: String, methodDescriptor: String = ""): Boolean {
         for (rule in memberRules) {
+            val trimmed = rule.trim()
+            if (trimmed.isEmpty()) continue
+            // smali `.method` 签名格式（含可选类前缀 `Lxxx;.method ...`）
+            if (Regex("\\.method($|\\s)").containsMatchIn(trimmed)) {
+                if (matchesMethodRule(trimmed, className, methodName, methodDescriptor)) return true
+                continue
+            }
             if (rule.startsWith("regex:")) {
                 val patternText = rule.substring("regex:".length).trim()
                 if (patternText.isEmpty()) continue
@@ -55,6 +82,90 @@ object FrostProtectRules {
             } catch (e: Exception) { }
         }
         return false
+    }
+
+    /**
+     * smali `.method` 签名格式规则匹配。
+     * 解析形如 `.method public static onClick(I)V` 的规则，支持：
+     *  - 方法名精确 / 正则（含通配符时按正则）
+     *  - 签名精确匹配（descriptor 例如 "(I)V"，完整参数+返回类型）
+     *  - 可选类限定：`Lcom/foo/Bar;.method public static onClick(I)V`
+     */
+    private fun matchesMethodRule(rule: String, className: String, methodName: String, methodDescriptor: String): Boolean {
+        val parsed = parseMethodRule(rule) ?: return false
+        // 类限定匹配（可空）：null 表示任意类
+        if (parsed.className != null) {
+            val classMatched = when {
+                parsed.className == className -> true
+                parsed.className.contains('*') || parsed.className.contains('?') ->
+                    try { Regex(parsed.className).matches(className) } catch (e: Exception) { false }
+                else -> false
+            }
+            if (!classMatched) return false
+        }
+        // 方法名匹配：精确或正则（含通配符时）
+        val nameMatched = if (parsed.methodName.contains('*') || parsed.methodName.contains('?')) {
+            try { Regex(parsed.methodName, RegexOption.IGNORE_CASE).matches(methodName) } catch (e: Exception) { false }
+        } else {
+            parsed.methodName == methodName
+        }
+        if (!nameMatched) return false
+        // 签名可选：为空则仅按方法名匹配；非空需精确一致
+        if (parsed.descriptor.isNotEmpty() && parsed.descriptor != methodDescriptor) return false
+        return true
+    }
+
+    /**
+     * 解析 `.method public static onClick(I)V` 格式。
+     * 返回类名（可空）、方法名、descriptor（如 "(I)V"，含返回类型）。
+     * 支持两种写法：`.method public static onClick(I)V` 单 token 含签名；
+     * 以及带类名限定 `Lcom/foo/Bar;.method onClick(I)V`。
+     */
+    private fun parseMethodRule(rule: String): ParsedMethodRule? {
+        var r = rule.trim()
+        val methodIdx = r.indexOf(".method")
+        if (methodIdx < 0) return null
+        // 提取类前缀：`Lxxx/yyy;.method ...` 中 `L` 到 `;` 为类名
+        var className: String? = null
+        if (methodIdx > 0) {
+            val classMarker = r.lastIndexOf("L", methodIdx)
+            if (classMarker >= 0) {
+                val semi = r.indexOf(';', classMarker)
+                if (semi >= 0 && semi < methodIdx) {
+                    className = r.substring(classMarker, semi + 1)
+                }
+            }
+        }
+        r = r.substring(methodIdx).removePrefix(".method").trim()
+        // 去除访问修饰符
+        val tokens = r.split(' ').filter { it.isNotEmpty() }
+        val first = tokens.firstOrNull { !ACCESS_MODIFIERS.contains(it) } ?: return null
+        val openIdx = first.indexOf('(')
+        val name: String
+        val descriptor: String
+        if (openIdx >= 0) {
+            // 单 token 形式：onClick(I)V
+            name = first.substring(0, openIdx)
+            descriptor = first.substring(openIdx) // "(I)V"
+            if (descriptor.length < 3) return null
+        } else {
+            name = first
+            // 两段式：`onClick` + `(I)V`
+            var rest = r.removePrefix(first).trim()
+            if (rest.startsWith("(")) {
+                val close = rest.indexOf(')')
+                descriptor = if (close >= 0) rest.substring(0, close + 1) else ""
+            } else {
+                descriptor = ""
+            }
+            if (descriptor.isEmpty()) return ParsedMethodRule(className, name, "")
+        }
+        return ParsedMethodRule(className, name, normalizeDescriptor(descriptor))
+    }
+
+    private fun normalizeDescriptor(descriptor: String): String {
+        // 将 smali 描述符中的空格去掉，如 "(I) V" -> "(I)V"
+        return descriptor.replace(" ", "")
     }
 
     private var excludeRules: Array<String> = arrayOf(

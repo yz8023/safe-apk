@@ -10,6 +10,7 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -44,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.adfxcbnm.hardeningtool.ui.theme.AndroidHardeningToolTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -422,6 +424,7 @@ fun MainScreen() {
     var showAppPicker by remember { mutableStateOf(false) }
     var installedApps by remember { mutableStateOf(listOf<AppInfo>()) }
     var isLoadingApps by remember { mutableStateOf(false) }
+    var appSearchQuery by remember { mutableStateOf("") }
     var showResultDialog by remember { mutableStateOf(false) }
     var resultSuccess by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf("") }
@@ -939,7 +942,7 @@ fun MainScreen() {
     }
 
     val apkPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
+        ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             logs = emptyList()
@@ -1082,6 +1085,36 @@ fun MainScreen() {
         }
     }
 
+    LaunchedEffect(Unit) {
+        HardeningSession.state.collectLatest { st ->
+            progress = st.progress
+            if (st.logs.isNotEmpty()) logs = st.logs
+            isProcessing = st.isRunning
+            if (!st.isRunning && st.result != null) {
+                val result = st.result
+                showResultDialog = true
+                resultSuccess = result.success
+                resultMessage = if (result.success) "加固完成" else "加固失败"
+                resultPath = result.path
+                resultSize = result.sizeDiff
+                runCatching {
+                    val record = HardeningHistory(
+                        id = System.currentTimeMillis().toString(),
+                        time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()),
+                        apkName = st.apkName.ifEmpty { selectedApkName ?: "unknown.apk" },
+                        success = result.success,
+                        configText = buildCurrentConfigText(),
+                        logText = st.logs.joinToString("\n") { "[${it.time}] ${it.message}" },
+                        stateJson = buildCurrentStateJson()
+                    )
+                    saveHardeningHistory(context, record)
+                    historyRecords = listHardeningHistory(context)
+                }
+                HardeningSession.clearResult()
+            }
+        }
+    }
+
     LaunchedEffect(rememberSelection, hardeningItems.map { it.isSelected }.joinToString(","), protectionItems.map { it.isSelected }.joinToString(",")) {
         if (!rememberSelection) return@LaunchedEffect
         prefs.edit()
@@ -1142,7 +1175,7 @@ fun MainScreen() {
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             FilledTonalButton(
-                                onClick = { apkPickerLauncher.launch("application/vnd.android.package-archive") },
+                                onClick = { apkPickerLauncher.launch(arrayOf("application/vnd.android.package-archive")) },
                                 modifier = Modifier.weight(1f).height(40.dp),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
@@ -1624,6 +1657,17 @@ fun MainScreen() {
                         isProcessing = true
                         progress = 0f
                         logs = emptyList()
+                        if (!FloatWindow.canDraw(context)) {
+                            addLog("未开启悬浮窗权限，后台进度将仅在通知栏显示", LogType.WARNING)
+                            try {
+                                val intent = Intent(
+                                    AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                            }
+                        }
                         val frostOptions = FrostEngineOptions(
                             keepClasses = frostKeepClasses,
                             smaller = frostSmaller,
@@ -1656,62 +1700,23 @@ fun MainScreen() {
                                     .toList()
                             } else null
                         )
-                        scope.launch {
-                            val result = if (useFrostEngine) {
-                                processFrostShellApk(
-                                    context, selectedApkUri!!, selectedApkName!!,
-                                    selectedHardening, selectedProtection,
-                                    ::addLog, ::addDetail,
-                                    onProgress = { p ->
-                                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                            progress = p
-                                        }
-                                    },
-                                    timestampedOutput = timestampedOutput,
-                                    autoVerify = autoVerify,
-                                    frostOptions = frostOptions
-                                )
-                            } else {
-                                processApk(
-                                context, selectedApkUri!!, selectedApkName!!,
-                                selectedHardening, selectedProtection,
-                                ::addLog, ::addDetail,
-                                onProgress = { p ->
-                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                        progress = p
-                                    }
-                                },
-                                timestampedOutput = timestampedOutput,
-                                autoVerify = autoVerify,
-                                signEnabled = signEnabled,
-                                signKeystorePath = signKeystorePath.ifEmpty { null },
-                                signAlias = signAlias.ifEmpty { null },
-                                signStorePass = signStorePass.ifEmpty { null },
-                                signKeyPass = signKeyPass.ifEmpty { null }
-                            )
-                            }
-                            isProcessing = false
-                            progress = 1f
-                            showResultDialog = true
-                            resultSuccess = result.success
-                            resultMessage = if (result.success) "加固完成" else "加固失败"
-                            resultPath = result.path
-                            resultSize = result.sizeDiff
-                            // 保存历史记录（配置+日志合一，用于查询/复制/重新使用配置）
-                            runCatching {
-                                val record = HardeningHistory(
-                                    id = System.currentTimeMillis().toString(),
-                                    time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()),
-                                    apkName = selectedApkName ?: "unknown.apk",
-                                    success = result.success,
-                                    configText = buildCurrentConfigText(),
-                                    logText = logs.joinToString("\n") { "[${it.time}] ${it.message}" },
-                                    stateJson = buildCurrentStateJson()
-                                )
-                                saveHardeningHistory(context, record)
-                                historyRecords = listHardeningHistory(context)
-                            }
-                        }
+                        HardeningSession.pendingTask = HardeningSession.PendingTask(
+                            useFrostEngine = useFrostEngine,
+                            apkUri = selectedApkUri!!,
+                            apkName = selectedApkName!!,
+                            hardening = selectedHardening,
+                            protection = selectedProtection,
+                            timestampedOutput = timestampedOutput,
+                            autoVerify = autoVerify,
+                            frostOptions = frostOptions,
+                            signEnabled = signEnabled,
+                            signKeystorePath = signKeystorePath.ifEmpty { null },
+                            signAlias = signAlias.ifEmpty { null },
+                            signStorePass = signStorePass.ifEmpty { null },
+                            signKeyPass = signKeyPass.ifEmpty { null }
+                        )
+                        HardeningSession.begin(selectedApkName!!)
+                        HardeningService.start(context)
                     },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     enabled = !isProcessing,
@@ -2052,6 +2057,24 @@ fun MainScreen() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(16.dp))
+                val pm = context.packageManager
+                OutlinedTextField(
+                    value = appSearchQuery,
+                    onValueChange = { appSearchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("搜索应用名称或包名") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    trailingIcon = {
+                        if (appSearchQuery.isNotEmpty()) {
+                            IconButton(onClick = { appSearchQuery = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "清空", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(8.dp))
                 if (isLoadingApps) {
                     Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
@@ -2061,25 +2084,34 @@ fun MainScreen() {
                         modifier = Modifier.height(400.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        items(installedApps) { app ->
+                        val filtered = installedApps.filter {
+                            appSearchQuery.isBlank() ||
+                                it.name.contains(appSearchQuery, ignoreCase = true) ||
+                                it.packageName.contains(appSearchQuery, ignoreCase = true)
+                        }
+                        if (filtered.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("未找到匹配的应用", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                        items(filtered) { app ->
+                            val currentName = app.name
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 color = MaterialTheme.colorScheme.surface,
                                 shape = RoundedCornerShape(12.dp),
                                 onClick = {
+                                    selectedApkUri = Uri.fromFile(File(pm.getApplicationInfo(app.packageName, 0).sourceDir))
+                                    selectedApkName = "${currentName}.apk"
+                                    logs = emptyList()
+                                    appSearchQuery = ""
                                     showAppPicker = false
-                                    try {
-                                        val pm = context.packageManager
-                                        val appInfo = pm.getApplicationInfo(app.packageName, 0)
-                                        val apkPath = appInfo.sourceDir
-                                        val apkFile = File(apkPath)
-                                        selectedApkUri = Uri.fromFile(apkFile)
-                                        selectedApkName = "${app.name}.apk"
-                                        logs = emptyList()
-                                        addLog("已选择: ${app.name} (${app.packageName})", LogType.SUCCESS)
-                                    } catch (e: Exception) {
-                                        addLog("获取APK路径失败: ${e.message}", LogType.ERROR)
-                                    }
+                                    addLog("已选择应用: ${currentName}", LogType.SUCCESS)
                                 }
                             ) {
                                 Row(
@@ -5000,6 +5032,69 @@ private fun streamCopyZipEntry(zis: ZipInputStream, zos: ZipOutputStream, entry:
     return crc.value
 }
 
+/**
+ * 普通引擎的 DEX 字符串加密：将当前 zip 条目流落盘为临时 dex，调用 FrostStringEncryptor
+ * 改写敏感 const-string 后写回 zip（DEFLATED）。返回写回字节的 CRC，失败返回 -1（保留原始流）。
+ */
+private fun copyDexWithStringEncryption(
+    zis: ZipInputStream,
+    zos: ZipOutputStream,
+    name: String,
+    context: Context,
+    frostOptions: FrostEngineOptions,
+    addLog: (String, LogType) -> Unit
+): Long {
+    val tmpDex = File(context.cacheDir, "enc_${System.currentTimeMillis()}_$name")
+    val backupDex = File(context.cacheDir, "bak_${System.currentTimeMillis()}_$name")
+    var fallbackLogged = false
+    try {
+        FileOutputStream(tmpDex).use { fos ->
+            val buf = ByteArray(65536)
+            var n: Int
+            while (zis.read(buf).also { n = it } > 0) fos.write(buf, 0, n)
+        }
+        if (tmpDex.length() == 0L) {
+            // 空 dex：直接按原样写回（不再走 encryptor，避免误处理）
+            val empty = tmpDex.readBytes()
+            val newEntry = ZipEntry(name).apply { method = ZipEntry.DEFLATED }
+            zos.putNextEntry(newEntry)
+            zos.write(empty)
+            zos.closeEntry()
+            return CRC32().apply { update(empty) }.value
+        }
+        // 保留原始字节备份：encryptor 失败或抛异常时必须回退原样，不能悬空 entry
+        tmpDex.copyTo(backupDex, overwrite = true)
+        val keywords = frostOptions.stringEncryptKeywords ?: emptySet()
+        val result = try {
+            com.adfxcbnm.frostshell.dex.FrostStringEncryptor.process(
+                tmpDex, keywords, frostOptions.stringEncryptMinLen
+            )
+        } catch (e: Exception) {
+            fallbackLogged = true
+            addLog("字符串加密: $name 处理失败，写回原始DEX: ${e.message}", LogType.WARNING)
+            backupDex.copyTo(tmpDex, overwrite = true)
+            null
+        }
+        val outBytes = tmpDex.readBytes()
+        val newEntry = ZipEntry(name).apply { method = ZipEntry.DEFLATED }
+        zos.putNextEntry(newEntry)
+        zos.write(outBytes)
+        zos.closeEntry()
+        if (result != null && result.encryptedCount > 0) {
+            addLog("字符串加密: $name 加密${result.encryptedCount}处(hash类${result.helperCount})", LogType.SUCCESS)
+        } else if (!fallbackLogged) {
+            addLog("字符串加密: $name 无命中敏感串(原样写回 ${outBytes.size}字节)", LogType.INFO)
+        }
+        return CRC32().apply { update(outBytes) }.value
+    } catch (e: Exception) {
+        addLog("字符串加密: $name 处理失败，原样保留: ${e.message}", LogType.WARNING)
+        return -1L
+    } finally {
+        tmpDex.delete()
+        backupDex.delete()
+    }
+}
+
 private fun ByteArray.indexOf(sub: ByteArray): Int {
     if (sub.isEmpty() || size < sub.size) return -1
     for (i in 0..size - sub.size) {
@@ -5090,7 +5185,7 @@ private fun verifyHardenedApk(file: File, addDetail: (String) -> Unit): Pair<Int
     return Pair(pass, total)
 }
 
-private suspend fun processApk(
+internal suspend fun processApk(
     context: Context,
     apkUri: Uri,
     apkName: String,
@@ -5101,11 +5196,12 @@ private suspend fun processApk(
     onProgress: (Float) -> Unit,
     timestampedOutput: Boolean,
     autoVerify: Boolean,
-    signEnabled: Boolean,
-    signKeystorePath: String?,
-    signAlias: String?,
-    signStorePass: String?,
-    signKeyPass: String?
+    signEnabled: Boolean = true,
+    signKeystorePath: String? = null,
+    signAlias: String? = null,
+    signStorePass: String? = null,
+    signKeyPass: String? = null,
+    frostOptions: FrostEngineOptions = FrostEngineOptions()
 ): ProcessResult = withContext(Dispatchers.IO) {
     val t0 = System.currentTimeMillis()
     val stages = StageTracker(addLog)
@@ -5263,7 +5359,26 @@ private suspend fun processApk(
                 context.assets.open("lib/$abi/libsecurity_check.so").use { it.readBytes() }.isNotEmpty()
             } catch (e: Exception) { false }
         }
+
+        // 普通引擎的 SO 伪装/随机化：仅作用于注入的 libsecurity_check.so。
+        // security_check.dex 内以 System.loadLibrary("security_check")（裸名）引用，
+        // 因此改名需同步改写 dex 中的 "security_check" 字符串为新 baseName。
+        val secCheckSoBase = if (frostOptions.soRandomization || !frostOptions.disguiseSoName.isNullOrBlank()) {
+            SoNamePolicy.resolveBaseName(frostOptions.disguiseSoName, preferRandom = frostOptions.soRandomization)
+        } else "security_check"
+        val secCheckSoName = SoNamePolicy.toFileName(secCheckSoBase)
+        val secCheckDisguised = secCheckSoName != "libsecurity_check.so"
+        if (secCheckDisguised) {
+            detailLog("SO伪装: libsecurity_check.so -> $secCheckSoName (base=$secCheckSoBase)")
+        }
+
+        // 函数抽取依赖 Frost 原生壳的指令池还原，普通引擎不支持：勾选时提示但不执行。
+        if (!frostOptions.extractMethodRules.isNullOrEmpty()) {
+            addLog("函数抽取依赖 Frost 引擎原生壳还原，普通引擎不支持，本次跳过抽取(规则已忽略)", LogType.WARNING)
+        }
+
         entriesToAdd.addAll(soTargets.map { "lib/$it/libsecurity_check.so" })
+        if (secCheckDisguised) entriesToAdd.addAll(soTargets.map { "lib/$it/$secCheckSoName" })
 
         val enabledFeatures = allFeatures.mapNotNull { PROTECTION_FEATURE_MAP[it] }
         detailLog("═══ 已选功能: ${enabledFeatures.size}项 ═══")
@@ -5318,9 +5433,14 @@ private suspend fun processApk(
                                 zos.closeEntry()
                             }
                         } else {
-                            val crc = streamCopyZipEntry(zis, zos, entry, name)
-                            if (Regex("classes\\d*\\.dex").matches(name)) {
-                                dexCrcMap[name] = crc
+                            if (frostOptions.stringEncrypt && Regex("classes\\d*\\.dex").matches(name)) {
+                                val crc = copyDexWithStringEncryption(zis, zos, name, context, frostOptions, addLog)
+                                if (crc >= 0) dexCrcMap[name] = crc
+                            } else {
+                                val crc = streamCopyZipEntry(zis, zos, entry, name)
+                                if (Regex("classes\\d*\\.dex").matches(name)) {
+                                    dexCrcMap[name] = crc
+                                }
                             }
                         }
                     }
@@ -5340,7 +5460,18 @@ private suspend fun processApk(
                 var injectedDexSize = 0
                 try {
                     val dexAsset = context.assets.open("security_check.dex")
-                    val dexBytes = dexAsset.use { it.readBytes() }
+                    var dexBytes = dexAsset.use { it.readBytes() }
+                    // SO 伪装时同步改写壳 dex 内 loadLibrary("security_check") 的裸库名
+                    if (secCheckDisguised) {
+                        val rewritten = com.adfxcbnm.hardeningtool.SoNameDisguiser
+                            .rewriteDexString(dexBytes, "security_check", secCheckSoBase)
+                        if (rewritten != null) {
+                            dexBytes = rewritten
+                            detailLog("库名改写: loadLibrary(\"security_check\") -> loadLibrary(\"$secCheckSoBase\")")
+                        } else {
+                            addLog("库名改写失败，security_check.dex 保持原库名", LogType.WARNING)
+                        }
+                    }
                     if (dexBytes.isNotEmpty()) {
                         var secDexName = "classes2.dex"
                         var secDexSuffix = 2
@@ -5368,8 +5499,9 @@ private suspend fun processApk(
                         val soAsset = context.assets.open("lib/$targetAbi/libsecurity_check.so")
                         val soBytes = soAsset.use { it.readBytes() }
                         if (soBytes.isNotEmpty()) {
-                            val targetName = "lib/$targetAbi/libsecurity_check.so"
-                            val existed = existingEntries.contains(targetName)
+                            val targetName = "lib/$targetAbi/$secCheckSoName"
+                            val existed = existingEntries.contains(targetName) ||
+                                existingEntries.contains("lib/$targetAbi/libsecurity_check.so")
                             val soEntry = ZipEntry(targetName).apply {
                                 method = ZipEntry.STORED
                                 size = soBytes.size.toLong()
@@ -5541,7 +5673,7 @@ val signerConfig = com.android.apksig.ApkSigner.SignerConfig.Builder(
     }
 }
 
-private suspend fun processFrostShellApk(
+internal suspend fun processFrostShellApk(
     context: Context,
     apkUri: Uri,
     apkName: String,
