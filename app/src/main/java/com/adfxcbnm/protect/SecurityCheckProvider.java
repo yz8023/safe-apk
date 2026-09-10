@@ -60,6 +60,8 @@ public class SecurityCheckProvider extends ContentProvider {
         CRITICAL.add(S.t(S.inject));
         CRITICAL.add(S.t(S.code_inject));
         CRITICAL.add(S.t(S.runtime_protect));
+        CRITICAL.add(S.t(S.signature));
+        CRITICAL.add(S.t(S.integrity));
         RESULT_TO_FEATURE.put(S.t(S.root), S.t(S.root_detect));
         RESULT_TO_FEATURE.put(S.t(S.magisk), S.t(S.magisk_detect));
         RESULT_TO_FEATURE.put(S.t(S.xposed), S.t(S.xposed_detect));
@@ -221,9 +223,9 @@ public class SecurityCheckProvider extends ContentProvider {
                         if (!key.isEmpty()) enabled.add(key);
                     }
                 } else if (line.startsWith(S.t(S.signature_sha256_))) {
-                    expectedSigSha256 = line.substring(18).trim();
+                    expectedSigSha256 = line.substring(S.t(S.signature_sha256_).length()).trim();
                 } else if (line.startsWith(S.t(S.cert_sha256_))) {
-                    expectedSigSha256 = line.substring(12).trim();
+                    expectedSigSha256 = line.substring(S.t(S.cert_sha256_).length()).trim();
                 } else if (line.startsWith(S.t(S.dex_crc_entry_))) {
                     String value = line.substring(14).trim();
                     int colonIdx = value.lastIndexOf(':');
@@ -388,6 +390,14 @@ public class SecurityCheckProvider extends ContentProvider {
                         }
                         if (enabled.contains(S.t(S.env_selinux)) && detectSelinuxPermissive()) {
                             put(S.t(S.env_selinux), true);
+                        }
+                        if ((enabled.contains(S.t(S.sig_verify)) || enabled.contains(S.t(S.app_sig))) && verifySignatureMatches(ctx)) {
+                            put(S.t(S.signature), true);
+                            triggerKill(S.t(S.monitor_signature));
+                        }
+                        if (enabled.contains(S.t(S.integrity)) && verifyDexChecksums(ctx)) {
+                            put(S.t(S.integrity), true);
+                            triggerKill(S.t(S.monitor_integrity));
                         }
                     } catch (Throwable t) {
                         Log.w(TAG, S.t(S.monitor_error), t);

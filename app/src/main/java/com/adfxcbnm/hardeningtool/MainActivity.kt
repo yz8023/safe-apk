@@ -703,7 +703,7 @@ fun MainScreen() {
         val sb = StringBuilder()
         sb.appendLine("== 加固工具配置导出 ==")
         sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-        sb.appendLine("版本: 9.10.36 (versionCode 78)")
+        sb.appendLine("版本: 9.10.37 (versionCode 79)")
         sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
         sb.appendLine()
         sb.appendLine("[引擎]")
@@ -3333,7 +3333,8 @@ fun MainScreen() {
                                         selectedApkUri?.let { OutputSettings.resolveApkPath(context, it) }
                                     ).first
                                     if (!exportDir.exists()) exportDir.mkdirs()
-                                    val base = src.name.substringBeforeLast('.').ifEmpty { src.name }
+                                    val base = profile.name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                                        .ifBlank { src.name.substringBeforeLast('.').ifEmpty { src.name } }
                                     when (fmt) {
                                         "BKS" -> {
                                             val out = File(exportDir, "$base.bks")

@@ -195,3 +195,11 @@ Entries discovered by the Agent during task execution should follow this format:
   - maps 特征补充也要做：lspd、riru、zygisk、libxposed_art、libxposed_lite（老版 Xposed/EdXposed/SandHook/Dreamland 库名 XposedBridge/edxp/sandhook/libxposed 原有）。Java S.java 与 native protection.cpp 的 hookCheckXposed 都要同步补，native 侧 scanMemoryForHookPatterns 已有 lsposed/riru/zygisk 兜底。
   - S.java 加密串生成法：新串用 python `''.join(chr(ord(c)^K[i%8]) for i,c in enumerate(s))`，K={0x12,0x34,0x56,0x78,0x9A,0xBC,0xDE,0xF0}；写回时统一小写 hex+必要时 (byte) 前缀。改完必须用解密脚本回验一遍防手抄错字节（本次 XposedHelpers 手写错 index28 起 8 字节，脚本回验发现）。
   - Compose AlertDialog 内容超高会裁切 text 区，底部按钮不可见。修复范式：text 的 Column 加 `Modifier.heightIn(max = 430.dp)`，内部列表/详情用 weight 分配各自高度，详情 Text 用 `verticalScroll(rememberScrollState())`，按钮行放最后不设 weight 固定可见。重构此类嵌套布局时注意括号归属——把块移出 Surface 后要同步删除原闭合括号，否则多闭导致后续代码脱离 Composable 作用域（本次即踩坑：按钮 Row 移到 Surface 外后遗留 2 层多余 `}`，Kotlin 报后续方法块 unresolved reference）。
+
+[Project Knowledge Summary]
+- Date: 2026-09-10
+- Context: Discovered by Agent while fixing v9.10.37 签名校验不生效 + 转换输出名
+- Category: Troubleshooting & Debugging
+  - 签名校验（重打包检测）存在两个叠加 bug：(1) `signature` 这个 result key 不在 SecurityCheckProvider 的 CRITICAL 集合里，而 enforce() 只遍历 CRITICAL 触发 triggerKill，导致 verifySignatureMatches 即使检测到重签名也不杀进程；(2) 解析 features.cfg 时 `signature_sha256=` 前缀解密明文实际是 17 字符（含 `=`），原代码 `line.substring(18)` 会截掉哈希首字符，应改用 `line.substring(S.t(S.signature_sha256_).length())`。修复范式：CRITICAL 补 `S.t(S.signature)` 与 `S.t(S.integrity)`；monitor 线程也要周期检测签名/完整性（不能只在启动 runAllChecks 一次），判断条件须与 runAllChecks 一致用 `enabled.contains(sig_verify)||enabled.contains(app_sig)`（enabled 存的是 feature key 不是 result key）。
+  - 签名转换输出文件名：加固签名配置（SigningProfile）入口的格式转换，`base` 取 `profile.name`（显示名称，清洗 `[\\/:*?"<>|]` 后 fallback 源文件名），替换原来的 `src.name.substringBeforeLast('.')`；签名工具（signTool*，文件选择导入入口）无 profile 名称，保留用源文件名。
+  - 探针验证法：SigVerifyProbe 复制 S.t() 解密 + substring 前缀长度解析 + CRITICAL 判定逻辑，JVM 直接跑断言（前缀长度17/12、解析 len=64、重签名 mismatch→kill=true），无需 Android 环境。
