@@ -81,7 +81,8 @@ object FrostClassRenamer {
         "Landroid/", "Landroidx/", "Ljava/", "Lkotlin/",
         "Lcom/google/", "Lcom/android/", "Lorg/", "Lcom/ark/",
         "Lcom/squareup/", "Lretrofit2/", "Lokhttp3/", "Lcom/bumptech/glide/",
-        "Lcom/facebook/", "Lcom/baseflow/", "Ldev/fluttercommunity/"
+        "Lcom/facebook/", "Lcom/baseflow/", "Ldev/fluttercommunity/",
+        "Lio/flutter/"
     )
 
     private val NAME_CHARS = "abcdefghijklmnopqrstuvwxyz"

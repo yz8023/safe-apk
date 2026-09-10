@@ -104,6 +104,7 @@ object FrostProtectRules {
         "Lcom/vungle/.*", "Lcom/wm/pulltorefresh/.*", "Lcom/xiaomi/.*", "Lcom/xiaomi/mipush/sdk/.*", "Lcom/xiaomi/push/.*", "Lcom/xiaomi/smack/.*", "Lcom/xiaomi/xmpush/.*", "Lcom/yandex/mobile/ads/.*",
         "Lcom/yixia/.*", "Lcz/msebera/android/httpclient/.*", "Lde/greenrobot/dao/.*", "Lde/greenrobot/event/.*", "Lde/keyboardsurfer/.*", "Lfr/castorfle/.*", "Lgnu/commonlisp/.*", "Lgnu/ecmascript/.*",
         "Lgnu/kawa/.*", "Lgnu/mapping/.*", "Lgnu/xml/.*", "Lhirondelle/date4j/.*", "Lim/quar/.*", "Linfo/guardianproject/bouncycastle/.*", "Lio/dcloud/.*", "Lio/fabric/sdk/.*",
+        "Lio/flutter/.*",
         "Lit/gmariotti/cardslib/.*", "Lit/sauronsoftware/ftp4j/.*", "Ljavax/.*", "Ljavax/activation/.*", "Ljavax/annotation/.*", "Ljavax/jmdns/.*", "Ljavax/mail/.*", "Ljavax/servlet/.*",
         "Ljavax/ws/.*", "Ljunit/.*", "Lkankan/wheel/.*", "Lkotlin/.*", "Lme/apla/cordova/.*", "Lme/zhanghai/android/.*", "Lmicrosoft/mappoint/.*", "Lmobisocial/omlet/.*",
         "Lmobisocial/omlib/.*", "Lmono/android/.*", "Lnet/authorize/.*", "Lnet/hockeyapp/android/.*", "Lnet/lingala/zip4j/.*", "Lnet/minidev/json/.*", "Lnet/simonvt/menudrawer/.*", "Lnet/sourceforge/pinyin4j/.*",
@@ -125,7 +126,11 @@ object FrostProtectRules {
     fun getInstance(): FrostProtectRules = this
 
     @Synchronized fun setExcludeRules(rules: Array<String>) {
-        excludeRules = rules
+        // Flutter 引擎类必须无条件保护：libflutter.so/libapp.so 按名 FindClass 定位 io.flutter.*，
+        // 类被重命名/字段被改名/方法被抽取都会导致启动即崩。用户规则文件覆盖时强制保留此条。
+        val merged = rules.toMutableList()
+        if (merged.none { it.contains("io/flutter") }) merged.add("Lio/flutter/.*")
+        excludeRules = merged.toTypedArray()
     }
 
     @Synchronized fun matchRules(fullClassDefName: String): Boolean {
