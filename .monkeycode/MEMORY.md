@@ -177,3 +177,12 @@ Entries discovered by the Agent during task execution should follow this format:
   - 修复范式（算术混淆 buildParamMoves 与字符串加密器一致）：参数搬移按类型选 opcode——this/对象（L 前缀）数组（[ 前缀）用 `MOVE_OBJECT_16`，J/D 用 `MOVE_WIDE_16`，I/F/S/B/C/Z 用 `MOVE_16`；判定用 MethodParameter.getType() 首字符。同源错误还有 FrostDexObfuscator 的算术混淆入口（applyArithmeticObfuscation 第446行 regCount、514-517行 curRegCount!=regCount 路径）。
   - 离线复现：dexlib2 builder 直接构造与 Symbol.toString() 等价的 ImmutableClassDef（寄存器数3、ins_size1、iget-object 复用 this），驱动 applyArithmeticObfuscation 后 dump TwoRegisterInstruction 断言搬移 opcode 与参数类型匹配；混合参数方法（I/J/Object/D/[I）逐一核对分流；真实 classes7.dex 全量跑验证 applied=true 且搬移计数正确（MOVE_OBJECT_16 占主体、MOVE_16 仅 int 参数）。回归 classpath 与其余探针一致，ArithSymbol/GenSymbolDex 位于 /tmp/opencode/regress/。
 
+
+[Project Knowledge Summary]
+- Date: 2026-09-10
+- Context: Discovered by Agent while fixing v9.10.35 DrawScope IncompatibleClassChangeError（cc.sylu.palmpc 仅开字符串加密+算法混淆时 drawRect-n-J9OG0$default 内 "Found interface DrawScope, but class was expected"）
+- Category: Troubleshooting & Debugging
+  - 根因是 dex 版本降级，非方法表分区：`DexFileFactory.loadDexFile(file, Opcodes.getDefault())` 会把加载的 dex 归一化为 api=20/dex-version 035，即使文件头是 038。各 pass 用 `RewrittenDexFile(dex.opcodes, ...)` 写回时沿用被降级的 opcodes → 产物 dex 版本从 038 掉到 035。ART 的 SupportsDefaultMethods() 需要 dex version >= 038（0x38）；035 下 method_verifier.cc:4523-4535 拒绝接口类（klass->IsInterface()）上的 METHOD_DIRECT（invoke-direct 接口方法），DrawScope 的 Kotlin $default 方法体 `invoke-direct DrawScope->offsetSize` 即触发 ICCE。palm 全系 dex 除 classes9.dex 外都是 038，8 个 dex 全受影响。
+  - 修复范式：新增 `FrostDexUtils.readDexVersion(File)`（读文件头字节4-6，"038"三字节，索引7为NUL——若读4字节会把 \0 带进 toIntOrNull 返回 null→默认35 的隐蔽 bug）+ `loadDexPreservingVersion(File)`（用 Opcodes.forDexVersion(ver) 加载），替换全部 11 个主加载点（shuffle/debug strip/goto/arithmetic/control flow/call indirection/method overload/field rename/string encrypt/class renamer/reflection injector）。校验性 load（写回后的自检）不需要改。
+  - 关联 bug：字符串加密对排除类（androidx 等）的 forceJumbo 分支 `CallReplacer(classDef, emptySet(), 0, ...)` 传 minLen=0 会让 isSensitive() 对所有非空串恒真 → 排除类被错误加密（regs 膨胀+密文+helper 调用）。必须传 `Int.MAX_VALUE` 使 isSensitive 恒 false，排除类只做 const-string(21c)->const-string/jumbo(31c) 纯升级。
+  - 离线验证：classes7.dex（stringPool=79691>0xFF00 触发 forceJumbo，methodPool=65266 未超 0xFFF0）跑 StrEncArithVer 断言 dexVersion 保持 38；DrawScopeFull dump 断言 drawRect-n-J9OG0$default regs=26 且无密文（修复前 regs=43+头部10条参数搬移+[62]密文）；FullPipeVer 全 pass 断言版本全程 38；JumboCheck 断言 DrawScope "Super calls..." 串保留原文仅升 jumbo。

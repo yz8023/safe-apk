@@ -703,7 +703,7 @@ fun MainScreen() {
         val sb = StringBuilder()
         sb.appendLine("== 加固工具配置导出 ==")
         sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-        sb.appendLine("版本: 9.10.34 (versionCode 76)")
+        sb.appendLine("版本: 9.10.35 (versionCode 77)")
         sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
         sb.appendLine()
         sb.appendLine("[引擎]")
