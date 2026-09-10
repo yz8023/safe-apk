@@ -242,8 +242,8 @@ object FrostStringEncryptor {
                     emptySet(),
                     emptyList(),
                     emptyList(),
-                    emptyList(),
-                    listOf(buildHelperMethod(sharedHelperType))
+                    listOf(buildHelperMethod(sharedHelperType)),
+                    emptyList()
                 )
             )
             // 委托式 DexFile：交由 DexPool 原样写入，避免 ImmutableDexFile 对全部类再做 immutable 化
