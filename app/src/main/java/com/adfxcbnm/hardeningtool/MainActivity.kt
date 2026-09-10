@@ -703,7 +703,7 @@ fun MainScreen() {
         val sb = StringBuilder()
         sb.appendLine("== 加固工具配置导出 ==")
         sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-        sb.appendLine("版本: 9.10.35 (versionCode 77)")
+        sb.appendLine("版本: 9.10.36 (versionCode 78)")
         sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
         sb.appendLine()
         sb.appendLine("[引擎]")
@@ -3412,7 +3412,10 @@ fun MainScreen() {
             onDismissRequest = { showHistoryDialog = false },
             title = { Text("加固历史记录") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)
+                ) {
                     Text(
                         "每次加固自动保存「配置 + 日志」一条记录。可查询、复制，或一键恢复配置。",
                         style = MaterialTheme.typography.bodySmall,
@@ -3454,7 +3457,7 @@ fun MainScreen() {
                             )
                         } else {
                             // 记录列表
-                            LazyColumn(modifier = Modifier.fillMaxWidth().height(150.dp)) {
+                            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1.1f)) {
                                 items(filtered.size, key = { idx -> filtered[idx].id }) { idx ->
                                     val rec = filtered[idx]
                                     val selected = rec.id == historySelectedId
@@ -3498,9 +3501,11 @@ fun MainScreen() {
                             // 选中记录的详情（选中项被过滤掉时回退到首项）
                             val safeSelectedId = historySelectedId?.takeIf { id -> filtered.any { it.id == id } }
                             val rec = filtered.firstOrNull { it.id == safeSelectedId } ?: filtered.first()
+                            val detail = "===== 配置 =====\n${rec.configText}\n\n===== 日志 =====\n${rec.logText}"
                             Surface(
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                shape = RoundedCornerShape(10.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f).fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
                                     Text(
@@ -3509,16 +3514,15 @@ fun MainScreen() {
                                         fontWeight = FontWeight.Bold
                                     )
                                     Spacer(Modifier.height(4.dp))
-                                    val detail = "===== 配置 =====\n${rec.configText}\n\n===== 日志 =====\n${rec.logText}"
                                     Text(
                                         detail,
                                         fontSize = 10.sp,
-                                        maxLines = 8,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.fillMaxWidth()
+                                        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
                                     )
-                                    Spacer(Modifier.height(6.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         OutlinedButton(
                                             onClick = {
                                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -3559,8 +3563,6 @@ fun MainScreen() {
                                             Text("重新使用配置", fontSize = 11.sp)
                                         }
                                     }
-                                }
-                            }
                         }
                     }
                 }

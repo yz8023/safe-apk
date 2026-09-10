@@ -186,3 +186,12 @@ Entries discovered by the Agent during task execution should follow this format:
   - 修复范式：新增 `FrostDexUtils.readDexVersion(File)`（读文件头字节4-6，"038"三字节，索引7为NUL——若读4字节会把 \0 带进 toIntOrNull 返回 null→默认35 的隐蔽 bug）+ `loadDexPreservingVersion(File)`（用 Opcodes.forDexVersion(ver) 加载），替换全部 11 个主加载点（shuffle/debug strip/goto/arithmetic/control flow/call indirection/method overload/field rename/string encrypt/class renamer/reflection injector）。校验性 load（写回后的自检）不需要改。
   - 关联 bug：字符串加密对排除类（androidx 等）的 forceJumbo 分支 `CallReplacer(classDef, emptySet(), 0, ...)` 传 minLen=0 会让 isSensitive() 对所有非空串恒真 → 排除类被错误加密（regs 膨胀+密文+helper 调用）。必须传 `Int.MAX_VALUE` 使 isSensitive 恒 false，排除类只做 const-string(21c)->const-string/jumbo(31c) 纯升级。
   - 离线验证：classes7.dex（stringPool=79691>0xFF00 触发 forceJumbo，methodPool=65266 未超 0xFFF0）跑 StrEncArithVer 断言 dexVersion 保持 38；DrawScopeFull dump 断言 drawRect-n-J9OG0$default regs=26 且无密文（修复前 regs=43+头部10条参数搬移+[62]密文）；FullPipeVer 全 pass 断言版本全程 38；JumboCheck 断言 DrawScope "Super calls..." 串保留原文仅升 jumbo。
+
+[Project Knowledge Summary]
+- Date: 2026-09-10
+- Context: Discovered by Agent while adding LSPosed injection detection + fixing history dialog layout (v9.10.36)
+- Category: Troubleshooting & Debugging
+  - LSPosed 检测不能只靠 /proc/self/maps 的 so 库名特征：LSPosed 在 Zygisk/KernelSU 模式注入时会隐藏/匿名映射注入的 so，maps 里看不到 XposedBridge/lspd 等明文库名。强信号是类加载检测——LSPosed 完整实现 Xposed API，hook 生效时进程 classloader 必能加载 de.robv.android.xposed.XposedBridge 与 XposedHelpers。用 cl.loadClass(name)（initialize=false，多 loader 兜底：自身 classloader / context classloader / system classloader）判 true。
+  - maps 特征补充也要做：lspd、riru、zygisk、libxposed_art、libxposed_lite（老版 Xposed/EdXposed/SandHook/Dreamland 库名 XposedBridge/edxp/sandhook/libxposed 原有）。Java S.java 与 native protection.cpp 的 hookCheckXposed 都要同步补，native 侧 scanMemoryForHookPatterns 已有 lsposed/riru/zygisk 兜底。
+  - S.java 加密串生成法：新串用 python `''.join(chr(ord(c)^K[i%8]) for i,c in enumerate(s))`，K={0x12,0x34,0x56,0x78,0x9A,0xBC,0xDE,0xF0}；写回时统一小写 hex+必要时 (byte) 前缀。改完必须用解密脚本回验一遍防手抄错字节（本次 XposedHelpers 手写错 index28 起 8 字节，脚本回验发现）。
+  - Compose AlertDialog 内容超高会裁切 text 区，底部按钮不可见。修复范式：text 的 Column 加 `Modifier.heightIn(max = 430.dp)`，内部列表/详情用 weight 分配各自高度，详情 Text 用 `verticalScroll(rememberScrollState())`，按钮行放最后不设 weight 固定可见。重构此类嵌套布局时注意括号归属——把块移出 Surface 后要同步删除原闭合括号，否则多闭导致后续代码脱离 Composable 作用域（本次即踩坑：按钮 Row 移到 Surface 外后遗留 2 层多余 `}`，Kotlin 报后续方法块 unresolved reference）。

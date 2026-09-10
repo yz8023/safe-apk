@@ -470,10 +470,43 @@ public class SecurityCheckProvider extends ContentProvider {
         return false;
     }
 
+    private static boolean xposedClassLoaded(String className) {
+        ClassLoader[] loaders = {
+            SecurityCheckProvider.class.getClassLoader(),
+            Thread.currentThread().getContextClassLoader(),
+            ClassLoader.getSystemClassLoader()
+        };
+        for (ClassLoader cl : loaders) {
+            if (cl == null) continue;
+            try {
+                cl.loadClass(className);
+                return true;
+            } catch (Throwable ignored) {}
+        }
+        return false;
+    }
+
     private static boolean detectXposed() {
+        // 1) 类加载检测：Xposed/LSPosed/EdXposed hook 生效时，应用进程必加载 XposedBridge
+        //    与 XposedHelpers（LSPosed 完整实现 Xposed API 并被注入到目标 classloader）。
+        //    这是 LSPosed 无法通过隐藏注入 so 痕迹来规避的强信号。
+        //    用 initialize=false 避免触发 Xposed 类的 <clinit> 副作用；多 loader 兜底。
+        try {
+            if (xposedClassLoaded(S.t(S.xposed_bridge_class))) return true;
+        } catch (Throwable ignored) {}
+        try {
+            if (xposedClassLoaded(S.t(S.xposed_helpers_class))) return true;
+        } catch (Throwable ignored) {}
+        // 2) maps 特征：库文件名（老版 Xposed/EdXposed/SandHook/Dreamland），
+        //    LSPosed（Zygisk/Riru/LSPosed loader 的 so 名）。
         try {
             String maps = readMapsCached();
-            return maps.contains(S.t(S.XposedBridge)) || maps.contains(S.t(S.edxp)) || maps.contains(S.t(S.sandhook)) || maps.contains(S.t(S.libxposed));
+            for (String lib : new String[]{
+                S.t(S.XposedBridge), S.t(S.edxp), S.t(S.sandhook), S.t(S.libxposed),
+                S.t(S.lspd), S.t(S.riru), S.t(S.libxposed_art), S.t(S.libxposed_lite), S.t(S.zygisk)
+            }) {
+                if (maps.contains(lib)) return true;
+            }
         } catch (Throwable ignored) {}
         return false;
     }
@@ -497,7 +530,7 @@ public class SecurityCheckProvider extends ContentProvider {
     private static boolean detectHookLibs() {
         try {
             String maps = readMapsCached();
-            for (String lib : new String[]{S.t(S.XposedBridge), S.t(S.edxp), S.t(S.sandhook), S.t(S.libxposed), S.t(S.libsubstrate), S.t(S.libwhale), S.t(S.libdreamland)}) {
+            for (String lib : new String[]{S.t(S.XposedBridge), S.t(S.edxp), S.t(S.sandhook), S.t(S.libxposed), S.t(S.libsubstrate), S.t(S.libwhale), S.t(S.libdreamland), S.t(S.lspd), S.t(S.riru), S.t(S.zygisk)}) {
                 if (maps.contains(lib)) return true;
             }
         } catch (Throwable ignored) {}
