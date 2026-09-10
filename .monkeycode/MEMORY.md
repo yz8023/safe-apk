@@ -203,3 +203,10 @@ Entries discovered by the Agent during task execution should follow this format:
   - 签名校验（重打包检测）存在两个叠加 bug：(1) `signature` 这个 result key 不在 SecurityCheckProvider 的 CRITICAL 集合里，而 enforce() 只遍历 CRITICAL 触发 triggerKill，导致 verifySignatureMatches 即使检测到重签名也不杀进程；(2) 解析 features.cfg 时 `signature_sha256=` 前缀解密明文实际是 17 字符（含 `=`），原代码 `line.substring(18)` 会截掉哈希首字符，应改用 `line.substring(S.t(S.signature_sha256_).length())`。修复范式：CRITICAL 补 `S.t(S.signature)` 与 `S.t(S.integrity)`；monitor 线程也要周期检测签名/完整性（不能只在启动 runAllChecks 一次），判断条件须与 runAllChecks 一致用 `enabled.contains(sig_verify)||enabled.contains(app_sig)`（enabled 存的是 feature key 不是 result key）。
   - 签名转换输出文件名：加固签名配置（SigningProfile）入口的格式转换，`base` 取 `profile.name`（显示名称，清洗 `[\\/:*?"<>|]` 后 fallback 源文件名），替换原来的 `src.name.substringBeforeLast('.')`；签名工具（signTool*，文件选择导入入口）无 profile 名称，保留用源文件名。
   - 探针验证法：SigVerifyProbe 复制 S.t() 解密 + substring 前缀长度解析 + CRITICAL 判定逻辑，JVM 直接跑断言（前缀长度17/12、解析 len=64、重签名 mismatch→kill=true），无需 Android 环境。
+
+[Project Knowledge Summary]
+- Date: 2026-09-10
+- Context: Discovered by Agent while fixing v9.10.40 悬浮窗回后台无按钮 + 普通引擎卡顿排查
+- Category: Troubleshooting & Debugging
+  - 引擎能力边界：普通引擎（processApk）只执行字符串加密与 SO 伪装/随机化；类顺序打乱/DEX头部/移除Debug/Goto/算术/控制流/调用间接化/方法重载/字段与类重命名/函数抽取这 11 项是 Frost 引擎专属，普通引擎勾选会被静默忽略（v9.10.40 起逐项 WARNING 提示）。字符串加密是普通引擎唯一内存大户（每 dex DexPool 重建放大 8-12x），卡顿/OOM 优先怀疑它，FrostStringEncryptor 有 maxHeap/12 与动态可用堆两道守卫自动跳过超大 dex。
+  - FloatWindow 线程约束：悬浮窗 View 操作必须主线程。加固任务跑在 Dispatchers.IO，onProgress 回调若直接改 TextView 会抛 CalledFromWrongThreadException 使任务失败并触发 hide()（用户观感即"回后台无悬浮按钮"）。修复范式：FloatWindow.show()/update()/hide() 内部用 Handler(mainLooper).post 派发，重构 showOnMain/hideOnMain 私有方法，任何调用方线程都安全。
