@@ -123,6 +123,15 @@ Entries discovered by the Agent during task execution should follow this format:
   - 大 dex 用 RewrittenClassDef/RewrittenDexFile 委托式透传（避免 ImmutableDexFile 对全类 TreeSet 排序 OOM）本身正确，DexPool 直接重写原始 backed 类也能成功（对照实验 ReproWrite 43MB 通过）；溢出诱因是新增 helper 后 method 池索引重排越过 0xFFFF。
 
 [Project Knowledge Summary]
+- Date: 2026-09-10
+- Context: Discovered by Agent while fixing v9.10.31 两个运行期 SIGSEGV 闪退（仅字符串加密；算术混淆开启）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - class_data_item 分区规范：static/private/构造函数必须进 direct_methods，其余实例方法（含接口 abstract/default）进 virtual_methods；DexPool 写回严格按 `getDirectMethods()/getVirtualMethods()` 分区输出，绝不按 access_flags 自动纠正。用 `ImmutableClassDef` 构造注入 helper 类时，把 static 方法传进 virtualMethods 参数位会让 ART 按 invoke-static 查 direct 方法表失败 → 跳空地址 SIGSEGV（pc=0/lr=0 单帧）。修复=把 helper 移回 directMethods 参数位；校验=写回后按类型/方法名定位 helper，确认 directMethods=1、virtualMethods=0。
+  - 算术混淆同根因：寄存器帧顶部新增 vT 并把 registers_size+1 后，Dalvik 按 `ins_start=registers_size-ins_size` 重新锚定参数，原 body 对参数寄存器的绝对索引全部错位。修复范式=头部先插参数搬移再写 vT：`dst=origRegCount-paramSlots+slot`、`src=origRegCount+delta-paramSlots+slot`，逐槽升序（src 严格大于已写入 dst 故安全），this 计 1 槽、J/D 宽参数 2 槽用 MOVE_WIDE_16，寄存器>255 用 MOVE_16/MOVE_WIDE_16（32x），newRegCount ≤ 0xFFFF。ADD_INT 替换与分支头两条路径都要处理；无参数方法（如 <clinit>）不需要搬移。
+  - 离线回归基建：`app/build/tmp/kotlin-classes/debug` + `app/libs/ironshell-deps.jar`（含 dexlib2）+ kotlin-stdlib + 前置 `android/util/Log` stub，javac 写 driver 直接调 FrostDexObfuscator/FrostStringEncryptor 各 pass 对真实 dex（/tmp/opencode/classes3.dex 338类）跑，写回后 loadDexFile 校验可解析，再用 TwoRegisterInstruction.getRegisterA/B 核对搬移寄存器号。
+
+[Project Knowledge Summary]
 - Date: 2026-09-06
 - Context: Discovered by Agent while fixing FrostShell 大小显示 +0 bug and adding 打开APK feature
 - Category: Troubleshooting & Debugging / Operations & Deployment
