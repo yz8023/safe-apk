@@ -166,3 +166,14 @@ Entries discovered by the Agent during task execution should follow this format:
   - Flutter 加固必须无条件保护 `io.flutter.*`：libflutter.so 引擎 native 与 libapp.so Dart AOT 按**类名字符串** FindClass/lookupClass 定位引擎类与插件注册类（GeneratedPluginRegistrant 等），DEX 类重命名/字段改名/方法抽取都会让 FindClass 返回 null 或导致 JNI 状态异常 → 启动即崩（本例为 libdartjni.so FindClassUnchecked x0=0 + "JNI is not initialized...during Dart plugin class registration"）。类重命名 PROTECTED_PREFIXES 加 `Lio/flutter/` 是硬性防线；FrostProtectRules.excludeRules 加 `Lio/flutter/.*` 覆盖字段重命名/方法抽取/L2 混淆各 pass；setExcludeRules 被用户规则文件整体覆盖时必须强制合并该条，否则配置能绕过保护。
   - Flutter 场景下字符串加密/算术混淆等字节码等价变换是安全的，唯一高危点是任何**按名解析**的 native/Dart 桥：除 io.flutter.* 外，package:jni 等 FFI 插件的 Java 类若被重命名，其 Dart 端 JNI.lookupClass 也会失败——需要用户在规则文件里给具体插件包前缀补 keep。
   - 回归法：javac --release 8 + com.android.dx.command.Main（ironshell-deps.jar 内含）把含 io.flutter.* 与应用类的源码转成 classes.dex（文件名必须匹配 classes(\d*)\.dex，否则 getDexNumber=-1 被过滤），再驱动 buildClassRenameMap 断言 io.flutter 不进 map、应用类进 map、处理后 FlutterJNI 类名原样保留且 dex 可加载。
+
+[Project Knowledge Summary]
+- Date: 2026-09-10
+- Context: Discovered by Agent while fixing v9.10.33 算术混淆产物 ART VerifyError（cc.sylu.palmpc 仅开基础28+字符串加密+算法混淆启动即崩）
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - ART 指令格式语义（method_verifier.cc 源码级确认）：move/move-from16/move-16 一律走 `VerifyCopyCat1`——只接受 Conflict 或 Category1（int/float/缓存引用）；**精确引用类型（PreciseReference/ExactReference，如 this 的具体类）的 RegTypeId 超出 RegTypeCache::NumberOfRegKindCacheIds() → 直接 FailForCopyCat1 报 `copy-cat1 vX<-vY type=Reference: <类名>`**。引用搬移必须走 VerifyCopyReference 的 move-object 系列（MOVE_OBJECT/MOVE_OBJECT_FROM16/MOVE_OBJECT_16）；J/D 用 move-wide 系列。
+  - 触发形态：kotlinx.coroutines.internal.Symbol.toString() 等极简方法（.registers 3、ins_size=1、body 第一条 `iget-object v2,v2` 复用 this 槽）在算术混淆（参数搬移 buildParamMoves）后产出 `MOVE_16 v2,v3` 搬运 this 引用 → 类验证即崩，早于任何方法调用，故崩在 androidx.startup 初始化链（ProcessLifecycleInitializer→ProcessLifecycleOwner→StateFlow→Symbol）。AndroidX 几乎必带 kotlinx.coroutines，属高概率复现面。
+  - 修复范式（算术混淆 buildParamMoves 与字符串加密器一致）：参数搬移按类型选 opcode——this/对象（L 前缀）数组（[ 前缀）用 `MOVE_OBJECT_16`，J/D 用 `MOVE_WIDE_16`，I/F/S/B/C/Z 用 `MOVE_16`；判定用 MethodParameter.getType() 首字符。同源错误还有 FrostDexObfuscator 的算术混淆入口（applyArithmeticObfuscation 第446行 regCount、514-517行 curRegCount!=regCount 路径）。
+  - 离线复现：dexlib2 builder 直接构造与 Symbol.toString() 等价的 ImmutableClassDef（寄存器数3、ins_size1、iget-object 复用 this），驱动 applyArithmeticObfuscation 后 dump TwoRegisterInstruction 断言搬移 opcode 与参数类型匹配；混合参数方法（I/J/Object/D/[I）逐一核对分流；真实 classes7.dex 全量跑验证 applied=true 且搬移计数正确（MOVE_OBJECT_16 占主体、MOVE_16 仅 int 参数）。回归 classpath 与其余探针一致，ArithSymbol/GenSymbolDex 位于 /tmp/opencode/regress/。
+
