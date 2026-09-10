@@ -55,7 +55,7 @@ object FrostReflectionClinitInjector {
     @Throws(IOException::class)
     fun inject(inputDex: String, outputDex: String, jniClassSig: String) {
         val inputFile = File(inputDex)
-        val dexFile = DexFileFactory.loadDexFile(inputFile, Opcodes.getDefault())
+        val dexFile = com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(inputFile)
         val jniDotClassName = sigToDotName(jniClassSig)
         val allClasses = ArrayList<ClassDef>()
         var totalMethodCount = 0

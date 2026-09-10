@@ -39,6 +39,33 @@ object FrostDexUtils {
     private val codeOffAppearMap = ConcurrentHashMap<String, Int>()
     private val KEEP_IN_PLACE_PREFIXES = arrayOf("Landroidx/compose/")
 
+    /**
+     * 读取 dex 文件头的版本号（第 4-7 字节，如 038 / 035）。
+     * 用于按原始版本构造 Opcodes，避免写回时 dexlib2 把高版本 dex 降级。
+     */
+    fun readDexVersion(dexFile: File): Int {
+        return try {
+            RandomAccessFile(dexFile, "r").use { raf ->
+                val header = ByteArray(8)
+                raf.seek(0)
+                raf.read(header)
+                // dex 头 "dex\n038\0"，版本号占据字节 4-6，"038" 三字节，索引 7 为 NUL
+                val verStr = String(header, 4, 3, Charsets.US_ASCII).trim()
+                verStr.toIntOrNull() ?: 35
+            }
+        } catch (e: Exception) {
+            35
+        }
+    }
+
+    /**
+     * 按文件头版本加载 dex 文件，保留原始 dex version（Opcodes.getDefault() 会把 038 等
+     * 高版本归一化为 api=20/version 035，导致写回时丢失接口 default methods 等新特性）。
+     */
+    fun loadDexPreservingVersion(dexFile: File): DexBackedDexFile {
+        return DexFileFactory.loadDexFile(dexFile, Opcodes.forDexVersion(readDexVersion(dexFile)))
+    }
+
     private fun keepInPlace(type: String?): Boolean {
         if (type == null) return false
         for (prefix in KEEP_IN_PLACE_PREFIXES) {
@@ -50,7 +77,7 @@ object FrostDexUtils {
 
     fun dexContainsKeepInPlace(dexFile: File): Boolean {
         return try {
-            val dex = DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            val dex = loadDexPreservingVersion(dexFile)
             for (classDef in dex.classes) {
                 if (!keepInPlace(classDef.type)) continue
                 return true
@@ -72,7 +99,7 @@ object FrostDexUtils {
         val totalClassesCount = AtomicInteger()
         val keepClassesCount = AtomicInteger()
         val protectRules = FrostProtectRules.getInstance()
-        val dexBackedDexFile = DexFileFactory.loadDexFile(originDex, Opcodes.getDefault())
+        val dexBackedDexFile = loadDexPreservingVersion(originDex)
         val keepRewriter = DexRewriter(object : RewriterModule() {
             override fun getDexFileRewriter(rewriters: Rewriters): Rewriter<DexFile> {
                 return Rewriter { value ->
@@ -124,7 +151,7 @@ object FrostDexUtils {
 
     @Throws(IOException::class)
     fun renamePackageName(dexFilePath: File, newDexFilePath: File, slashShellPackageName: String) {
-        val dexBackedDexFile = DexFileFactory.loadDexFile(dexFilePath, Opcodes.getDefault())
+        val dexBackedDexFile = loadDexPreservingVersion(dexFilePath)
         FrostLogUtils.debug("Rename shell package name to: " + slashShellPackageName)
         val dexMethodRewriter = DexRewriter(object : RewriterModule() {
             override fun getTypeRewriter(rewriters: Rewriters): Rewriter<String> {

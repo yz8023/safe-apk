@@ -471,7 +471,7 @@ object FrostClassRenamer {
         val stringCandidates = LinkedHashSet<String>()
         for (df in loadable) {
             try {
-                val dex = DexFileFactory.loadDexFile(df, Opcodes.getDefault())
+                val dex = com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(df)
                 for (cd in dex.classes) {
                     allTypes.add(cd.type)
                     for (m in cd.methods) {
