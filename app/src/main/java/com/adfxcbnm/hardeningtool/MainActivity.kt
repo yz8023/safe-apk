@@ -5377,6 +5377,28 @@ internal suspend fun processApk(
             addLog("函数抽取依赖 Frost 引擎原生壳还原，普通引擎不支持，本次跳过抽取(规则已忽略)", LogType.WARNING)
         }
 
+        // 普通引擎仅支持字符串加密与 SO 伪装/随机化，其余混淆项（类顺序打乱/DEX头部混淆/移除Debug/
+        // Goto插入/算术/控制流/调用间接化/方法重载/字段重命名/类重命名）是 Frost 引擎专属能力。
+        // 这些项在普通引擎下会被静默忽略，此处逐项提示，避免用户误以为已生效。
+        val frostOnlyIgnored = buildList {
+            if (frostOptions.classShuffle) add("类顺序打乱")
+            if (frostOptions.dexHeaderObfuscation) add("DEX头部混淆")
+            if (frostOptions.debugRemoval) add("移除Debug信息")
+            if (frostOptions.gotoInsertion) add("Goto插入混淆")
+            if (frostOptions.arithmeticObfuscation) add("算术混淆")
+            if (frostOptions.controlFlow) add("控制流混淆")
+            if (frostOptions.callIndirection) add("调用间接化")
+            if (frostOptions.methodOverload) add("方法重载混淆")
+            if (frostOptions.fieldRename) add("字段重命名")
+            if (frostOptions.classRename) add("类重命名")
+        }
+        if (frostOnlyIgnored.isNotEmpty()) {
+            addLog(
+                "以下混淆项仅 Frost 引擎支持，普通引擎本次已忽略: ${frostOnlyIgnored.joinToString("、")}",
+                LogType.WARNING
+            )
+        }
+
         entriesToAdd.addAll(soTargets.map { "lib/$it/libsecurity_check.so" })
         if (secCheckDisguised) entriesToAdd.addAll(soTargets.map { "lib/$it/$secCheckSoName" })
 
