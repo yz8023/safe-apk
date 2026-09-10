@@ -21,13 +21,18 @@ object FloatWindow {
 
     private var windowManager: WindowManager? = null
     private var floatView: TextView? = null
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     fun canDraw(context: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
 
     fun show(context: Context) {
         if (!canDraw(context)) return
-        hide()
+        mainHandler.post { showOnMain(context) }
+    }
+
+    private fun showOnMain(context: Context) {
+        hideOnMain()
         try {
             val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val tv = TextView(context).apply {
@@ -68,10 +73,16 @@ object FloatWindow {
     }
 
     fun update(progressText: String) {
-        floatView?.let { it.text = "加固中 $progressText" }
+        mainHandler.post {
+            floatView?.text = "加固中 $progressText"
+        }
     }
 
     fun hide() {
+        mainHandler.post { hideOnMain() }
+    }
+
+    private fun hideOnMain() {
         try {
             floatView?.let { windowManager?.removeView(it) }
         } catch (ignored: Exception) {
