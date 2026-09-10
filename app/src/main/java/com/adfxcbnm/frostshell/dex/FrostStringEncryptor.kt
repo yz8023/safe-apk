@@ -133,7 +133,7 @@ object FrostStringEncryptor {
                 return Result(0, 0)
             }
         }
-        val dex = DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+        val dex = com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         // 方法池保护：Dalvik 的 invoke 指令（format 35c/3rc）用 16 位 method 索引，且没有 jumbo 变体，
         // 因此单 dex 的 method_ids 数量必须远小于 65,535。实测完整 palm 的 classes7.dex method_ids=65266、
         // classes.dex method_ids=65441，仅余 269/94 个槽位。字符串加密会新增 helper 方法引用并使
@@ -176,7 +176,11 @@ object FrostStringEncryptor {
                     newClasses.add(classDef)
                     continue
                 }
-                val jumboOnly = CallReplacer(classDef, emptySet(), 0, false, false, false, true, sharedHelperType)
+                // jumboOnly：minLen=Int.MAX_VALUE 让 isSensitive 恒 false，排除类字符串
+                // 只做 const-string(21c)->const-string/jumbo(31c) 升级，绝不加密（不插入
+                // helper 调用/参数搬移）。此前传 minLen=0 使 isSensitive 对所有非空串恒真，
+                // 排除类被错误加密并改写方法体（regs 膨胀+密文），破坏 androidx 等框架类。
+                val jumboOnly = CallReplacer(classDef, emptySet(), Int.MAX_VALUE, false, false, false, true, sharedHelperType)
                 var dirty = false
                 val dirs = ArrayList<Method>()
                 for (method in classDef.directMethods) {

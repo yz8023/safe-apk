@@ -129,7 +129,7 @@ object FrostDexObfuscator {
     // 仅打乱 class_def 排列顺序，类内部方法顺序不变。写入后自检，失败自动回滚。
     fun shuffleDexClasses(dexFile: File): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault()) as com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile) as com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
         } catch (e: Exception) {
             FrostLogUtils.warn("dex class shuffle: load failed for %s: %s", dexFile.name, e.message)
             return false
@@ -170,7 +170,7 @@ object FrostDexObfuscator {
     // 移除方法实现的 debug items（行号/局部变量名/prologue 等），保留 try-block 与指令。
     fun stripDebugInfo(dexFile: File): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
             FrostLogUtils.warn("debug strip: load failed for %s: %s", dexFile.name, e.message)
             return false
@@ -255,7 +255,7 @@ object FrostDexObfuscator {
     // 跳过：含 switch payload、abstract/native、保护类的方法。
     fun applyGotoInsertion(dexFile: File): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
             FrostLogUtils.warn("goto insertion: load failed for %s: %s", dexFile.name, e.message)
             return false
@@ -367,7 +367,7 @@ object FrostDexObfuscator {
     // 安全策略同原版：跳过含分支/switch payload/abstract/native/static(仅 a)/含 try 的方法。
     fun applyArithmeticObfuscation(dexFile: File, doAddReplace: Boolean = true, doBranchInsert: Boolean = true): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
             FrostLogUtils.warn("arithmetic obfuscation: load failed for %s: %s", dexFile.name, e.message)
             return false
@@ -592,7 +592,7 @@ object FrostDexObfuscator {
     // 有局部寄存器。原版使用 goto +3 会跳过原第 1 条指令（语义破坏），此处修正为 +2。
     fun applyControlFlow(dexFile: File): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
             FrostLogUtils.warn("control flow: load failed for %s: %s", dexFile.name, e.message)
             return false
@@ -691,7 +691,7 @@ object FrostDexObfuscator {
     // 与 gotoInsertion 的差异仅在资格判定。原版同样存在 goto +3 偏移 bug，此处修正为 +2。
     fun applyCallIndirection(dexFile: File): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
             FrostLogUtils.warn("call indirection: load failed for %s: %s", dexFile.name, e.message)
             return false
@@ -787,7 +787,7 @@ object FrostDexObfuscator {
     // 参数为一个 int，返回 void，方法体 return-void。签名含返回类型避免重复定义冲突。
     fun applyMethodOverload(dexFile: File): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
             FrostLogUtils.warn("method overload: load failed for %s: %s", dexFile.name, e.message)
             return false
@@ -896,7 +896,7 @@ object FrostDexObfuscator {
 
     fun applyFieldRename(dexFile: File, protectedClasses: Set<String> = emptySet()): Boolean {
         val dex = try {
-            DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault())
+            com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
             FrostLogUtils.warn("field rename: load failed for %s: %s", dexFile.name, e.message)
             return false
