@@ -346,13 +346,28 @@ object FrostDexUtils {
             outRandomAccessFile.seek((insnsOffset + i * 2).toLong())
             byteCode[i * 2] = outRandomAccessFile.readByte()
             byteCode[i * 2 + 1] = outRandomAccessFile.readByte()
-            outRandomAccessFile.seek((insnsOffset + i * 2).toLong())
-            if (obfuscateIns) {
-                outRandomAccessFile.writeShort(insRandom.nextInt())
-            } else {
-                outRandomAccessFile.writeShort(14)
+        }
+        // stub 必须为合法指令序列：原实现 obfuscateIns 时填充随机字节，随机字节会被 ART
+        // verifier 解析为非法 invoke（参数寄存器数超过方法头 outs_size），类加载即抛
+        // VerifyError「invalid argument count exceeds outsSize」。改为 return 指令 + NOP 填充，
+        // reproduce obfuscateIns 时为 return 前掺入随机数量 NOP，破坏"清一色 return"模式。
+        val stub = ByteArray(insnsCapacity * 2)
+        var cursor = 0
+        if (obfuscateIns) {
+            val leadNops = insRandom.nextInt((insnsCapacity * 2 - returnByteCodes.size) / 2 + 1)
+            for (k in 0 until leadNops) {
+                stub[cursor++] = 0
+                stub[cursor++] = 0
             }
         }
+        System.arraycopy(returnByteCodes, 0, stub, cursor, returnByteCodes.size)
+        cursor += returnByteCodes.size
+        while (cursor < stub.size) {
+            stub[cursor++] = 0
+            stub[cursor++] = 0
+        }
+        outRandomAccessFile.seek(insnsOffset.toLong())
+        outRandomAccessFile.write(stub, 0, stub.size)
         val aesKey = FrostShellConfig.getInstance().getInsnsCryptKey()!!
         val rc4Key = FrostCryptoUtils.buildInsnsRc4Key(aesKey, method.methodIndex)
         val encrypted = FrostCryptoUtils.rc4Crypt(rc4Key, byteCode)
