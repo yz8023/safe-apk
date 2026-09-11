@@ -482,6 +482,7 @@ fun MainScreen() {
     var autoVerify by remember { mutableStateOf(prefs.getBoolean("auto_verify", true)) }
     var rememberSelection by remember { mutableStateOf(prefs.getBoolean("remember_selection", false)) }
     var useFrostEngine by remember { mutableStateOf(prefs.getBoolean("use_frost_engine", false)) }
+    var frostObfExpanded by remember { mutableStateOf(prefs.getBoolean("frost_obf_expanded", true)) }
 
     var outputDirCustom by remember { mutableStateOf(OutputSettings.getCustomDir(context)) }
     var outputToSource by remember { mutableStateOf(OutputSettings.getOutputToSource(context)) }
@@ -650,9 +651,15 @@ fun MainScreen() {
     }
 
     // 代码混淆功能项（与加固/保护同级的独立功能，各开关独立、互不包含）
-    val obfuscationItems = remember {
+    // 拆分两组：commonObfuscationItems 为普通引擎与 Frost 引擎均支持（字符串加密）；
+    // frostOnlyObfuscationItems 为 Frost 引擎专属（普通引擎下会被忽略），仅 Frost 引擎卡片内展示。
+    val commonObfuscationItems = remember {
         mutableStateListOf(
-            MutableFeatureItem("字符串加密", "obfuscation", Icons.Default.AutoAwesome, isSelected = frostStringEncrypt),
+            MutableFeatureItem("字符串加密", "obfuscation", Icons.Default.AutoAwesome, isSelected = frostStringEncrypt)
+        )
+    }
+    val frostOnlyObfuscationItems = remember {
+        mutableStateListOf(
             MutableFeatureItem("类顺序打乱", "obfuscation", Icons.Default.Shuffle, isSelected = frostClassShuffle),
             MutableFeatureItem("DEX头部混淆", "obfuscation", Icons.Default.Code, isSelected = frostDexHeaderObfuscation),
             MutableFeatureItem("移除Debug信息", "obfuscation", Icons.Default.Delete, isSelected = frostDebugRemoval),
@@ -718,17 +725,17 @@ fun MainScreen() {
     }
 
     fun syncObfuscationState(): Unit {
-        obfuscationItems.getOrNull(0)?.let { frostStringEncrypt = it.isSelected }
-        obfuscationItems.getOrNull(1)?.let { frostClassShuffle = it.isSelected }
-        obfuscationItems.getOrNull(2)?.let { frostDexHeaderObfuscation = it.isSelected }
-        obfuscationItems.getOrNull(3)?.let { frostDebugRemoval = it.isSelected }
-        obfuscationItems.getOrNull(4)?.let { frostGotoInsertion = it.isSelected }
-        obfuscationItems.getOrNull(5)?.let { frostArithmeticObfuscation = it.isSelected }
-        obfuscationItems.getOrNull(6)?.let { frostControlFlow = it.isSelected }
-        obfuscationItems.getOrNull(7)?.let { frostCallIndirection = it.isSelected }
-        obfuscationItems.getOrNull(8)?.let { frostMethodOverload = it.isSelected }
-        obfuscationItems.getOrNull(9)?.let { frostFieldRename = it.isSelected }
-        obfuscationItems.getOrNull(10)?.let { frostClassRename = it.isSelected }
+        commonObfuscationItems.getOrNull(0)?.let { frostStringEncrypt = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(0)?.let { frostClassShuffle = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(1)?.let { frostDexHeaderObfuscation = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(2)?.let { frostDebugRemoval = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(3)?.let { frostGotoInsertion = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(4)?.let { frostArithmeticObfuscation = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(5)?.let { frostControlFlow = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(6)?.let { frostCallIndirection = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(7)?.let { frostMethodOverload = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(8)?.let { frostFieldRename = it.isSelected }
+        frostOnlyObfuscationItems.getOrNull(9)?.let { frostClassRename = it.isSelected }
         prefs.edit()
             .putBoolean("frost_string_encrypt", frostStringEncrypt)
             .putBoolean("frost_class_shuffle", frostClassShuffle)
@@ -748,7 +755,7 @@ fun MainScreen() {
         val sb = StringBuilder()
         sb.appendLine("== 加固工具配置导出 ==")
         sb.appendLine("时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
-        sb.appendLine("版本: 9.10.37 (versionCode 79)")
+        sb.appendLine("版本: 9.10.43 (versionCode 85)")
         sb.appendLine("目标APK: ${selectedApkName ?: "(未选择)"}")
         sb.appendLine()
         sb.appendLine("[引擎]")
@@ -841,7 +848,7 @@ fun MainScreen() {
         j.put("dictSymbolsText", dictSymbolsText)
         j.put("hardeningSel", org.json.JSONArray(hardeningItems.filter { it.isSelected }.map { it.name }))
         j.put("protectionSel", org.json.JSONArray(protectionItems.filter { it.isSelected }.map { it.name }))
-        j.put("obfuscationSel", org.json.JSONArray(obfuscationItems.filter { it.isSelected }.map { it.name }))
+        j.put("obfuscationSel", org.json.JSONArray((commonObfuscationItems + frostOnlyObfuscationItems).filter { it.isSelected }.map { it.name }))
         return j.toString()
     }
 
@@ -920,7 +927,7 @@ fun MainScreen() {
             val os = j.optJSONArray("obfuscationSel")?.let { arr ->
                 (0 until arr.length()).map { arr.getString(it) }.toSet()
             } ?: emptySet()
-            obfuscationItems.forEach { it.isSelected = os.contains(it.name) }
+            (commonObfuscationItems + frostOnlyObfuscationItems).forEach { it.isSelected = os.contains(it.name) }
         }
         syncObfuscationState()
         // 持久化
@@ -1520,13 +1527,13 @@ fun MainScreen() {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("代码混淆", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "字符串加密 + DEX pass 混淆（点击${if (codeObfExpanded) "收起" else "展开"}配置）",
+                                    "字符串加密（普通/Frost 引擎均支持）",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Spacer(Modifier.width(8.dp))
-                            val obfSelectedCount = obfuscationItems.count { it.isSelected }
+                            val obfSelectedCount = commonObfuscationItems.count { it.isSelected }
                             if (obfSelectedCount > 0) {
                                 Surface(
                                     color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
@@ -1589,9 +1596,9 @@ fun MainScreen() {
                                     )
                                 }
                                 Spacer(Modifier.height(6.dp))
-                                Text("DEX pass 混淆（点击切换，互不影响）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                Text("字符串加密（点击切换）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 Spacer(Modifier.height(6.dp))
-                                obfuscationItems.chunked(2).forEach { rowItems ->
+                                commonObfuscationItems.chunked(2).forEach { rowItems ->
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1611,7 +1618,7 @@ fun MainScreen() {
                                 }
                                 // 同步 chip 选择到 frost 开关与持久化
                                 LaunchedEffect(
-                                    obfuscationItems.map { it.isSelected }.joinToString(",")
+                                    commonObfuscationItems.map { it.isSelected }.joinToString(",")
                                 ) {
                                     syncObfuscationState()
                                 }
@@ -1674,6 +1681,83 @@ fun MainScreen() {
                                 showSwitch = false,
                                 onClick = { showDisguiseDialog = true }
                             )
+                        }
+                        Divider()
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    frostObfExpanded = !frostObfExpanded
+                                    prefs.edit().putBoolean("frost_obf_expanded", frostObfExpanded).apply()
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("DEX pass 混淆（Frost 专属）", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "仅 Frost 引擎生效，普通引擎下自动忽略",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            val frostObfCount = frostOnlyObfuscationItems.count { it.isSelected }
+                            if (frostObfCount > 0) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        "$frostObfCount",
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Icon(
+                                if (frostObfExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        if (frostObfExpanded) {
+                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                                frostOnlyObfuscationItems.chunked(2).forEach { rowItems ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        rowItems.forEach { item ->
+                                            FeatureChip(
+                                                item = item,
+                                                modifier = Modifier.weight(1f),
+                                                accentColor = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        repeat(2 - rowItems.size) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                    Spacer(Modifier.height(3.dp))
+                                }
+                                LaunchedEffect(
+                                    frostOnlyObfuscationItems.map { it.isSelected }.joinToString(",")
+                                ) {
+                                    syncObfuscationState()
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
                         }
                     }
                 }
@@ -5121,24 +5205,33 @@ private fun copyDexWithStringEncryption(
             backupDex.copyTo(tmpDex, overwrite = true)
             null
         }
-        val outBytes = tmpDex.readBytes()
+        // 流式写回：加密结果直接从 tmpDex 文件流式拷贝到 zip，不再 readBytes 全量驻留，
+        // 避免 30-40MB 主 dex 的完整 ByteArray 与 DexPool 对象图同时存在于堆中（卡死主因）
         val newEntry = ZipEntry(name).apply { method = ZipEntry.DEFLATED }
         zos.putNextEntry(newEntry)
-        zos.write(outBytes)
+        val crc = CRC32()
+        val buf = ByteArray(65536)
+        var n: Int
+        FileInputStream(tmpDex).buffered().use { fis ->
+            while (fis.read(buf).also { n = it } > 0) {
+                zos.write(buf, 0, n)
+                crc.update(buf, 0, n)
+            }
+        }
         zos.closeEntry()
         if (result != null && result.encryptedCount > 0) {
             addLog("字符串加密: $name 加密${result.encryptedCount}处(hash类${result.helperCount})", LogType.SUCCESS)
         } else if (!fallbackLogged) {
-            addLog("字符串加密: $name 无命中敏感串(原样写回 ${outBytes.size}字节)", LogType.INFO)
+            addLog("字符串加密: $name 无命中敏感串(原样写回 ${tmpDex.length()}字节)", LogType.INFO)
         }
-        return CRC32().apply { update(outBytes) }.value
+        return crc.value
     } catch (e: Exception) {
         addLog("字符串加密: $name 处理失败，原样保留: ${e.message}", LogType.WARNING)
         return -1L
     } finally {
-        // 每处理完一个 dex 即主动回收写回阶段残留的 ByteArray 与对象图，降低串行处理
-        // 多个大 dex 时的峰值堆占用（尤其 30-40MB 主 classes.dex 连续加密的场景）
-        System.gc()
+        // 注意：不能在 dex 之间主动 System.gc()——ART 全堆 STW GC 会冻结包括主线程在内的
+        // 所有线程数秒，大堆下表现为"点击无响应"的输入分发 ANR 与"加固卡死"。
+        // 堆峰值由流式写回（不 readBytes 全量驻留）+ 引用置空控制，交由运行时自动 GC 即可。
         tmpDex.delete()
         backupDex.delete()
     }
