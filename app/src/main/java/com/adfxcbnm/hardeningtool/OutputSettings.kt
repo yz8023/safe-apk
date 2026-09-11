@@ -98,7 +98,10 @@ object OutputSettings {
     }
 
     fun defaultDir(context: Context): File =
-        File(context.getExternalFilesDir(null), "ADFXCBNM")
+        File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "ADFXCBNM"
+        )
 
     fun getOutputDir(context: Context, sourceApkPath: String?): Pair<File, String> {
         if (getOutputToSource(context)) {
@@ -112,16 +115,10 @@ object OutputSettings {
             getCustomDir(context)?.let { custom ->
                 if (isWritable(custom)) return Pair(File(custom), "自定义目录")
             }
-            if (sourceApkPath != null) {
-                val srcDir = File(sourceApkPath).parentFile
-                if (srcDir != null && srcDir.exists() && srcDir.canWrite()) {
-                    return Pair(srcDir, "来源APK目录")
-                }
-            }
         }
         val fallback = defaultDir(context)
         if (!fallback.exists()) fallback.mkdirs()
-        return Pair(fallback, "默认目录")
+        return Pair(fallback, "Download/ADFXCBNM")
     }
 
     /**
