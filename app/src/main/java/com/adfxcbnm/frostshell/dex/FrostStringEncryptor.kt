@@ -76,6 +76,68 @@ object FrostStringEncryptor {
     private val STRING_INIT = ImmutableMethodReference("Ljava/lang/String;", "<init>", listOf("[C"), "V")
 
     /**
+     * 敏感串判定策略（顶层版）。与 CallReplacer.isSensitive 保持一致，预扫描与改写路径
+     * 必须复用同一策略，避免"池判定有敏感串/改写判无"或反之的判定漂移。
+     */
+    internal fun isSensitivePolicy(
+        value: String,
+        keywords: Set<String>,
+        minLen: Int,
+        allCjk: Boolean,
+        allUrl: Boolean
+    ): Boolean {
+        if (value.isEmpty()) return false
+        // 中文/URL 全量模式：无条件加密，满足"所有中文字符串与 URL 型字符串不可明文落池"
+        if (allCjk && containsCjk(value)) return true
+        if (allUrl && isUrlLike(value)) return true
+        // 关键词命中时无条件加密：token/apiKey 等短敏感串不受 minLen 拦截
+        if (keywords.isNotEmpty() && keywords.any { value.contains(it, ignoreCase = true) }) return true
+        if (value.all { it.isDigit() || it.isWhitespace() }) return false
+        val cps = value.codePointCount(0, value.length)
+        // 含 CJK（中文）的串按语义单元计长，2 字即加密：覆盖"还没有任务"等短中文 UI 文案
+        val hasCjk = containsCjk(value)
+        // 全量兜底：达到长度阈值即加密，防止中文提示语/业务文案明文落池
+        return cps >= (if (hasCjk) 2 else minLen)
+    }
+
+    internal fun containsCjk(value: String): Boolean =
+        value.codePoints().toArray().any { cp ->
+            (cp in 0x3400..0x4DBF) || (cp in 0x4E00..0x9FFF) || (cp in 0xF900..0xFAFF) || (cp in 0x20000..0x2FA1F)
+        }
+
+    internal fun isUrlLike(value: String): Boolean {
+        val v = value.trim()
+        if (v.length < 4) return false
+        val lower = v.lowercase()
+        if (lower.startsWith("http://") || lower.startsWith("https://")) return true
+        if (lower.startsWith("ftp://") || lower.startsWith("ws://") || lower.startsWith("wss://")) return true
+        // 常见内网协议/自定义 scheme 包 const-string 的形式，如 https://p.qlogo.cn/gh/...
+        if (lower.contains("://")) return true
+        // Android 平台类型 URL 与 schema/xmlns 等也属于信息泄露面
+        if (lower.startsWith("android.resource://") || lower.startsWith("content://")) return true
+        return false
+    }
+
+    /**
+     * 轻量预扫描快速路径：仅迭代字符串池判定是否存在敏感串，不触碰任何类/方法指令。
+     * 池中无敏感串 ⇒ 全 dex 的 const-string 引用都不可能在改写阶段命中 ⇒ 本轮必然
+     * encryptedCount==0 且不进 DexPool 写回，输出与"原样复制"逐字节一致。短路后跳过
+     * 全量遍历与对象图重建，对无中文的纯第三方字节码 dex 省去绝大部分开销。
+     */
+    private fun hasSensitivePoolString(
+        dex: com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile,
+        keywords: Set<String>,
+        minLen: Int,
+        allCjk: Boolean,
+        allUrl: Boolean
+    ): Boolean {
+        for (s in dex.stringSection) {
+            if (isSensitivePolicy(s, keywords, minLen, allCjk, allUrl)) return true
+        }
+        return false
+    }
+
+    /**
      * 共享解密 helper 的方法名。所有加密点引用同一条 MethodReference（定义在同一共享 helper 类内），
      * 因此 method 池仅 +1，避免每类独立 helper 导致 method_ids 池暴涨击穿 65,535 上限。
      */
@@ -141,6 +203,18 @@ object FrostStringEncryptor {
         // "Unsigned short value out of range"（InstructionWriter.write(Instruction35c)），且无法回退为 jumbo。
         // 该 dex 若临近上限只能整体跳过字符串加密（宁可少加密，不能产出损坏 dex）。
         val dexBacked = dex as com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
+        // 轻量预扫描快速路径：字符串池中没有任何敏感词/CJK/URL/超长串时，本轮改写必然
+        // 0 命中、0 helper、不触发 DexPool 写回，输出与原样复制逐字节一致。此时直接短路，
+        // 跳过下方"遍历全部类→全部方法→全部指令"的开销最大的路径。对无中文的纯第三方
+        // 字节码 dex（常见于大 APK 的 classes3+ 等），从"全量扫描+白跑一趟"变为"扫描即过"，
+        // 是手机端提速与降内存峰值的主要来源。策略与改写阶段复用同一 isSensitivePolicy。
+        if (!hasSensitivePoolString(dexBacked, keywords, minLen, allCjk, allUrl)) {
+            FrostLogUtils.info(
+                "string encrypt: %s no sensitive string, pass-through (fast path)",
+                dexFile.name
+            )
+            return Result(0, 0)
+        }
         val methodCount = dexBacked.methodSection.size
         if (methodCount > 0xFFF0) {
             FrostLogUtils.warn(
@@ -459,38 +533,10 @@ object FrostStringEncryptor {
             )
         }
 
-        private fun isSensitive(value: String): Boolean {
-            if (value.isEmpty()) return false
-            // 中文/URL 全量模式：无条件加密，满足"所有中文字符串与 URL 型字符串不可明文落池"
-            if (allCjk && containsCjk(value)) return true
-            if (allUrl && isUrlLike(value)) return true
-            // 关键词命中时无条件加密：token/apiKey 等短敏感串不受 minLen 拦截
-            if (keywords.isNotEmpty() && keywords.any { value.contains(it, ignoreCase = true) }) return true
-            if (value.all { it.isDigit() || it.isWhitespace() }) return false
-            val cps = value.codePointCount(0, value.length)
-            // 含 CJK（中文）的串按语义单元计长，2 字即加密：覆盖"还没有任务"等短中文 UI 文案
-            val hasCjk = containsCjk(value)
-            // 全量兜底：达到长度阈值即加密，防止中文提示语/业务文案明文落池
-            return cps >= (if (hasCjk) 2 else minLen)
-        }
-
-        private fun containsCjk(value: String): Boolean =
-            value.codePoints().toArray().any { cp ->
-                (cp in 0x3400..0x4DBF) || (cp in 0x4E00..0x9FFF) || (cp in 0xF900..0xFAFF) || (cp in 0x20000..0x2FA1F)
-            }
-
-        private fun isUrlLike(value: String): Boolean {
-            val v = value.trim()
-            if (v.length < 4) return false
-            val lower = v.lowercase()
-            if (lower.startsWith("http://") || lower.startsWith("https://")) return true
-            if (lower.startsWith("ftp://") || lower.startsWith("ws://") || lower.startsWith("wss://")) return true
-            // 常见内网协议/自定义 scheme 包 const-string 的形式，如 https://p.qlogo.cn/gh/...
-            if (lower.contains("://")) return true
-            // Android 平台类型 URL 与 schema/xmlns 等也属于信息泄露面
-            if (lower.startsWith("android.resource://") || lower.startsWith("content://")) return true
-            return false
-        }
+        private fun isSensitive(value: String): Boolean =
+            com.adfxcbnm.frostshell.dex.FrostStringEncryptor.isSensitivePolicy(
+                value, keywords, minLen, allCjk, allUrl
+            )
     }
 
     /**
