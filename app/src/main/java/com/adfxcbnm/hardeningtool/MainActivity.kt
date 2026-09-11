@@ -6,15 +6,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.app.Activity
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -59,6 +62,45 @@ private const val MAX_LOG_ENTRIES = 200
 private const val BUFFER_SIZE = 8192
 private val APP_VERSION: String = BuildConfig.VERSION_NAME
 private val CONFIG_VERSION: String = BuildConfig.VERSION_NAME
+
+
+/**
+ * 文件选择器记住上次读取位置：自定义 contract 在 ACTION_OPEN_DOCUMENT 时携带
+ * DocumentsContract.EXTRA_INITIAL_URI，让系统文件选择器从上次目录打开。
+ */
+private class OpenDocumentRememberContract(
+    private val lastDirKey: String
+) : ActivityResultContract<Array<String>, Uri?>() {
+    override fun createIntent(context: Context, input: Array<String>): Intent {
+        val last = LastOpenDir.get(context, lastDirKey)
+        return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = input.firstOrNull() ?: "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, input)
+            last?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+        }
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
+        if (resultCode != Activity.RESULT_OK) return null
+        return intent?.data
+    }
+}
+
+private object LastOpenDir {
+    private const val PREF = "adfxcbnm_last_open_dir"
+
+    fun get(context: Context, key: String): Uri? {
+        val s = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getString(key, null)
+        return runCatching { if (s.isNullOrBlank()) null else Uri.parse(s) }.getOrNull()
+    }
+
+    fun remember(context: Context, key: String, uri: Uri?) {
+        if (uri == null) return
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .edit().putString(key, uri.toString()).apply()
+    }
+}
 
 
 
@@ -942,9 +984,10 @@ fun MainScreen() {
     }
 
     val apkPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
+        OpenDocumentRememberContract("apk_last_dir")
     ) { uri ->
         if (uri != null) {
+            LastOpenDir.remember(context, "apk_last_dir", uri)
             logs = emptyList()
             selectedApkUri = uri
             selectedApkName = uri.lastPathSegment?.substringAfterLast("/") ?: "unknown.apk"
@@ -970,9 +1013,10 @@ fun MainScreen() {
     }
 
     val signKeystorePickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
+        OpenDocumentRememberContract("keystore_last_dir")
     ) { uri ->
         if (uri != null) {
+            LastOpenDir.remember(context, "keystore_last_dir", uri)
             try {
                 // 保留原始文件名导入（不复制改名），便于用户识别签名来源；
                 // 写入应用私有目录避免权限问题，文件名做安全净化（去掉路径分隔符）。
@@ -1005,9 +1049,10 @@ fun MainScreen() {
     }
 
     val dictImporterLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
+        OpenDocumentRememberContract("dict_last_dir")
     ) { uri ->
         if (uri != null) {
+            LastOpenDir.remember(context, "dict_last_dir", uri)
             try {
                 val rows = context.contentResolver.openInputStream(uri)?.use { input ->
                     input.bufferedReader().readLines()
@@ -1039,9 +1084,10 @@ fun MainScreen() {
     }
 
     val signToolPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
+        OpenDocumentRememberContract("sign_tool_last_dir")
     ) { uri ->
         if (uri != null) {
+            LastOpenDir.remember(context, "sign_tool_last_dir", uri)
             try {
                 val ext = uri.lastPathSegment?.substringAfterLast(".", "p12") ?: "p12"
                 val target = File(context.filesDir, "signing_tool_keystore.$ext")
@@ -2234,7 +2280,7 @@ fun MainScreen() {
                         shape = RoundedCornerShape(6.dp)
                     ) {
                         Text(
-                            "${context.getExternalFilesDir(null)?.absolutePath}/ADFXCBNM/",
+                            "${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath}/ADFXCBNM/",
                             modifier = Modifier.padding(8.dp),
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -3274,7 +3320,7 @@ fun MainScreen() {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "将当前签名转换为其他格式，输出到加固输出目录；可立即设为签名密钥使用。",
+                        "将当前签名转换为其他格式，留存到应用内部存储（filesDir/saved_signings）；可立即设为签名密钥使用。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3360,10 +3406,8 @@ fun MainScreen() {
                             val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 runCatching {
                                     val src = File(profile.keystorePath)
-                                    val exportDir = OutputSettings.getOutputDir(
-                                        context,
-                                        selectedApkUri?.let { OutputSettings.resolveApkPath(context, it) }
-                                    ).first
+                                    // 签名转换产物留存到应用内部存储，不写入输出目录
+                                    val exportDir = File(context.filesDir, "saved_signings")
                                     if (!exportDir.exists()) exportDir.mkdirs()
                                     val base = profile.name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
                                         .ifBlank { src.name.substringBeforeLast('.').ifEmpty { src.name } }
@@ -4298,7 +4342,7 @@ fun MainScreen() {
             text = {
                 Column {
                     Text(
-                        "输入绝对路径，例如 /storage/emulated/0/ADFXCBNM。路径不可写或无法创建时，流程将回退默认目录。",
+                        "输入绝对路径，例如 /storage/emulated/0/Download/ADFXCBNM。路径不可写或无法创建时，流程将回退默认目录。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -4307,7 +4351,7 @@ fun MainScreen() {
                         value = outputDirTextInput,
                         onValueChange = { outputDirTextInput = it },
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("/storage/emulated/0/ADFXCBNM") },
+                        placeholder = { Text("/storage/emulated/0/Download/ADFXCBNM") },
                         singleLine = true
                     )
                 }
@@ -5221,7 +5265,8 @@ internal suspend fun processApk(
         val baseName = apkName.replace(".apk", "")
         val suffix = if (timestampedOutput) "_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}" else ""
         outputFile = File(outputDir, "${baseName}_hardened${suffix}.apk")
-        tempFile = File(outputDir, "${baseName}_temp_${System.currentTimeMillis()}.apk")
+        // 临时文件仅保留在应用内部 cache 目录，不落入输出目录
+        tempFile = File(context.cacheDir, "${baseName}_temp_${System.currentTimeMillis()}.apk")
 
         // Step 1: Stream APK to temp file (supports large APKs without OOM)
         stages.begin("读取源APK")
@@ -5413,7 +5458,7 @@ internal suspend fun processApk(
         val dexCrcMap = linkedMapOf<String, Long>()
 
         // Create intermediate file for first pass output
-        val intermediateFile = File(outputDir, "${baseName}_intermediate_${System.currentTimeMillis()}.apk")
+        val intermediateFile = File(context.cacheDir, "${baseName}_intermediate_${System.currentTimeMillis()}.apk")
 
         stages.begin("注入加固资源")
         // First pass: copy all files with modifications from tempFile to intermediateFile
@@ -5791,7 +5836,10 @@ internal suspend fun processFrostShellApk(
         try {
             onProgress(0.3f)
             stages.begin("引擎加固")
-            outApk = FrostShellEngine.protectApk(inputFile.absolutePath, outputDir, frostOptions)
+            // 引擎中间产物仅写入内部 cache 目录，不落入输出目录
+            val engineOutDir = File(context.cacheDir, "frostshell_engine_out")
+            if (!engineOutDir.exists()) engineOutDir.mkdirs()
+            outApk = FrostShellEngine.protectApk(inputFile.absolutePath, engineOutDir, frostOptions)
             onProgress(0.9f)
             if (outApk != null) {
                 stages.end(LogType.SUCCESS, outApk.name)
@@ -5981,7 +6029,7 @@ private fun overlayProtectionLayer(
         entriesToAdd.addAll(soTargetNames)
 
         var manifestModified = false
-        val intermediateFile = File(outputFile.parentFile, "${outputFile.nameWithoutExtension}_intermediate.apk")
+        val intermediateFile = File(context.cacheDir, "${outputFile.nameWithoutExtension}_intermediate.apk")
         ZipInputStream(FileInputStream(inputFile).buffered()).use { zis ->
             ZipOutputStream(BufferedOutputStream(FileOutputStream(intermediateFile), 65536)).use { zos ->
                 var entry = zis.nextEntry
