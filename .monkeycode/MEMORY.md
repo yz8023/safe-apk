@@ -210,3 +210,10 @@ Entries discovered by the Agent during task execution should follow this format:
 - Category: Troubleshooting & Debugging
   - 引擎能力边界：普通引擎（processApk）只执行字符串加密与 SO 伪装/随机化；类顺序打乱/DEX头部/移除Debug/Goto/算术/控制流/调用间接化/方法重载/字段与类重命名/函数抽取这 11 项是 Frost 引擎专属，普通引擎勾选会被静默忽略（v9.10.40 起逐项 WARNING 提示）。字符串加密是普通引擎唯一内存大户（每 dex DexPool 重建放大 8-12x），卡顿/OOM 优先怀疑它，FrostStringEncryptor 有 maxHeap/12 与动态可用堆两道守卫自动跳过超大 dex。
   - FloatWindow 线程约束：悬浮窗 View 操作必须主线程。加固任务跑在 Dispatchers.IO，onProgress 回调若直接改 TextView 会抛 CalledFromWrongThreadException 使任务失败并触发 hide()（用户观感即"回后台无悬浮按钮"）。修复范式：FloatWindow.show()/update()/hide() 内部用 Handler(mainLooper).post 派发，重构 showOnMain/hideOnMain 私有方法，任何调用方线程都安全。
+
+[Project Knowledge Summary]
+- Date: 2026-09-11
+- Context: Discovered by Agent while implementing v9.10.41 存储路径优化
+- Category: Operations & Deployment
+  - 存储路径约定（v9.10.41 起）：签名格式转换产物留存 `filesDir/saved_signings/`；加固临时/中间文件（tempFile/intermediateFile/Frost 引擎产物 `cacheDir/frostshell_engine_out/`）只进 cacheDir，输出目录仅保留最终加固 APK；默认输出目录 = `Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)/ADFXCBNM`（不再回退源APK目录）；混淆字典导出（用户主动导出）仍写输出目录。
+  - 文件选择器记住上次位置：自定义 `ActivityResultContract`（OpenDocumentRememberContract）在 ACTION_OPEN_DOCUMENT intent 携带 `DocumentsContract.EXTRA_INITIAL_URI`（用自定义 contract 而非 ActivityResultContracts.OpenDocument，后者无法传 extra），配合 LastOpenDir 用 prefs 按 key（apk_last_dir/keystore_last_dir/dict_last_dir/sign_tool_last_dir）持久化上次选择 uri。
