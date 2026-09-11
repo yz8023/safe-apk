@@ -469,12 +469,18 @@ object FrostClassRenamer {
         var protectedSet = HashSet(extraProtectedPrefixes)
         val allTypes = LinkedHashSet<String>()
         val stringCandidates = LinkedHashSet<String>()
+        val nativeTypes = LinkedHashSet<String>()
         for (df in loadable) {
             try {
                 val dex = com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(df)
                 for (cd in dex.classes) {
                     allTypes.add(cd.type)
                     for (m in cd.methods) {
+                        // native 类不得重命名：native 方法通过 JNI 符号引用类名，
+                        // 重命名后注册失败。同时排除其引用方改写，避免错位崩溃。
+                        if ((m.accessFlags and 0x100) != 0) {
+                            nativeTypes.add(cd.type)
+                        }
                         val impl = m.implementation ?: continue
                         for (insn in impl.instructions) {
                             if (insn !is ReferenceInstruction) continue
@@ -493,6 +499,8 @@ object FrostClassRenamer {
         for (candidate in stringCandidates) {
             if (allTypes.contains(candidate)) protectedSet.add(candidate)
         }
+        // native 类同样纳入保护：不进入重命名 map，引用方也不改写
+        protectedSet.addAll(nativeTypes)
 
         // step3: 全局分配新类名（跨 dex 唯一）
         val used = HashSet<String>()
@@ -581,8 +589,7 @@ object FrostClassRenamer {
                 renamed to touched
             } catch (v: Exception) {
                 dexFile.writeBytes(backup.readBytes())
-                FrostLogUtils.warn("class rename verify failed, rolled back: %s (%s)", dexFile.name, v.message)
-                0 to 0
+                throw IllegalStateException("class rename verify failed for ${dexFile.name}: ${v.message}", v)
             }
         } catch (e: Exception) {
             if (backup.exists()) {
@@ -592,8 +599,7 @@ object FrostClassRenamer {
                     // 回滚失败交由上层兜底
                 }
             }
-            FrostLogUtils.warn("class rename failed for %s: %s", dexFile.name, e.message)
-            0 to 0
+            throw IllegalStateException("class rename failed for ${dexFile.name}: ${e.message}", e)
         } finally {
             backup.delete()
         }
