@@ -793,11 +793,45 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
                 if (isFieldRename()) {
                     FrostDexObfuscator.applyFieldRename(dexFile, componentProtected)
                 }
-                if (classRenameMap.isNotEmpty() && isClassRename()) {
-                    FrostClassRenamer.applyClassRenameDex(dexFile, classRenameMap)
-                }
             } catch (e: Exception) {
                 FrostLogUtils.warn("WARNING: file-level dex obfuscation %s fail: %s", dexFile.name, e.message)
+            }
+        }
+        // 阶段2.5：类重命名（跨 dex 原子执行）。必须与其它文件级 pass 分离：
+        // 单一 dex 写回校验失败会破坏跨 dex 引用一致性（如 MainActivity 所在 dex 回滚、
+        // 被引用类所在 dex 已改名 → NoClassDefFoundError 崩溃）。因此任一 dex 失败时
+        // 必须回滚全部 dex 并整体放弃本次类重命名，保证要么全改名、要么全不改名。
+        if (classRenameMap.isNotEmpty() && isClassRename()) {
+            val renameTargets = dexFiles.filter { it.exists() }
+            if (renameTargets.isNotEmpty()) {
+                val atomicBackups = HashMap<File, File>()
+                var renameFailed = false
+                try {
+                    for (df in renameTargets) {
+                        val bk = File(df.absolutePath + ".clsrm_atomic_backup")
+                        bk.writeBytes(df.readBytes())
+                        atomicBackups[df] = bk
+                    }
+                    for (df in renameTargets) {
+                        FrostClassRenamer.applyClassRenameDex(df, classRenameMap)
+                    }
+                } catch (e: Exception) {
+                    renameFailed = true
+                    FrostLogUtils.warn("class rename atomic rollback triggered: %s", e.message)
+                }
+                if (renameFailed) {
+                    for ((df, bk) in atomicBackups) {
+                        try {
+                            if (bk.exists()) df.writeBytes(bk.readBytes())
+                        } catch (r: Throwable) {
+                            FrostLogUtils.warn("class rename rollback restore %s fail: %s", df.name, r.message)
+                        }
+                    }
+                    FrostLogUtils.warn("class rename aborted: all dex rolled back, app will run with original class names")
+                }
+                for (bk in atomicBackups.values) {
+                    bk.delete()
+                }
             }
         }
         // 阶段3：并行方法体抽取到指令池 + hash 重写
