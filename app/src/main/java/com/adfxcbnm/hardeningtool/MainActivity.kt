@@ -5109,6 +5109,8 @@ private fun copyDexWithStringEncryption(
         // 保留原始字节备份：encryptor 失败或抛异常时必须回退原样，不能悬空 entry
         tmpDex.copyTo(backupDex, overwrite = true)
         val keywords = frostOptions.stringEncryptKeywords ?: emptySet()
+        // 逐 dex 进度日志：字符串加密是 [3] 阶段的耗时大头，无进度提示会被误判为卡死
+        addLog("字符串加密: 开始处理 $name (${(tmpDex.length() / 1024)}KB)", LogType.INFO)
         val result = try {
             com.adfxcbnm.frostshell.dex.FrostStringEncryptor.process(
                 tmpDex, keywords, frostOptions.stringEncryptMinLen
@@ -5134,6 +5136,9 @@ private fun copyDexWithStringEncryption(
         addLog("字符串加密: $name 处理失败，原样保留: ${e.message}", LogType.WARNING)
         return -1L
     } finally {
+        // 每处理完一个 dex 即主动回收写回阶段残留的 ByteArray 与对象图，降低串行处理
+        // 多个大 dex 时的峰值堆占用（尤其 30-40MB 主 classes.dex 连续加密的场景）
+        System.gc()
         tmpDex.delete()
         backupDex.delete()
     }
