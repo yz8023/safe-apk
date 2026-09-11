@@ -888,13 +888,114 @@ object FrostDexObfuscator {
     // 相对原版二进制字符串替换方案：不受字符串跨 table 共享影响（字段名/方法名共用 string 条目
     // 会被连带改名的缺陷），引用定位精确；且 DexPool 自动重算 SHA-1/checksum。
     // 跳过：受保护类、含 native 方法的类、serialVersionUID、带 annotation 的字段、synthetic、enum。
-    private class FieldKey(val cls: String, val name: String, val type: String) {
+    internal class FieldKey(val cls: String, val name: String, val type: String) {
         override fun hashCode(): Int = cls.hashCode() * 31 * 31 + name.hashCode() * 31 + type.hashCode()
         override fun equals(other: Any?): Boolean =
             other is FieldKey && other.cls == cls && other.name == name && other.type == type
     }
 
-    fun applyFieldRename(dexFile: File, protectedClasses: Set<String> = emptySet()): Boolean {
+    /**
+     * 跨所有 dex 全局构建字段重命名映射（一次性全量加载收集，避免对每个 dex 重复 loadDexFile）。
+     * 返回 Map<字段定义, 新名>，为空表示没有可重命名字段。
+     */
+    internal fun buildFieldRenameMap(dexFiles: List<File>, protectedClasses: Set<String> = emptySet()): Map<FieldKey, String> {        val fieldMap = HashMap<FieldKey, String>()
+        val usedNames = HashSet<String>()
+        val protectedPrefixes = HashSet(protectedClasses)
+        for (dexFile in dexFiles) {
+            if (!dexFile.exists()) continue
+            val dex = try {
+                com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
+            } catch (e: Exception) {
+                FrostLogUtils.warn("field rename: skip scan %s: %s", dexFile.name, e.message)
+                continue
+            }
+            val nativeClasses = HashSet<String>()
+            for (cd in dex.classes) {
+                for (m in cd.methods) {
+                    if ((m.accessFlags and 0x100) != 0) {
+                        nativeClasses.add(cd.type)
+                        break
+                    }
+                }
+            }
+            for (cd in dex.classes) {
+                if (com.adfxcbnm.frostshell.config.FrostProtectRules.matchRules(cd.type)) continue
+                if (cd.type in nativeClasses) continue
+                if (isProtectedClass(cd.type, protectedPrefixes)) continue
+                for (f in cd.fields) {
+                    if (f.name == "serialVersionUID") continue
+                    if (f.annotations.any()) continue
+                    if ((f.accessFlags and 0x1000) != 0) continue
+                    if ((f.accessFlags and 0x4000) != 0) continue
+                    val key = FieldKey(cd.type, f.name, f.type)
+                    if (fieldMap.containsKey(key)) continue
+                    var newName = com.adfxcbnm.frostshell.config.FrostNameDictionary.genFieldIdentifier(usedNames)
+                        ?: genRandomName(3 + random.nextInt(5))
+                    var guard = 0
+                    while (usedNames.contains(newName) && guard++ < 8) {
+                        newName = com.adfxcbnm.frostshell.config.FrostNameDictionary.genFieldIdentifier(usedNames)
+                            ?: genRandomName(3 + random.nextInt(5))
+                    }
+                    usedNames.add(newName)
+                    fieldMap[key] = newName
+                }
+            }
+        }
+        if (fieldMap.isNotEmpty()) {
+            FrostLogUtils.info("field rename map built: %d fields", fieldMap.size)
+        }
+        return fieldMap
+    }
+
+    /**
+     * 字段重命名跨 dex 原子执行：任一 dex 写回校验失败必须回滚全部 dex 并整体放弃本次
+     * 字段重命名。原因同 applyFieldRename 注释：跨 dex 引用错位会导致 NoSuchFieldError。
+     * 返回 false 表示无字段可重命名或未启用。
+     */
+    fun applyFieldRenameAtomic(dexFiles: List<File>, protectedClasses: Set<String> = emptySet()): Boolean {
+        val fieldMap = buildFieldRenameMap(dexFiles, protectedClasses)
+        if (fieldMap.isEmpty()) return false
+        val targets = dexFiles.filter { it.exists() }
+        if (targets.isEmpty()) return false
+        val atomicBackups = HashMap<File, File>()
+        var renameFailed = false
+        try {
+            for (df in targets) {
+                val bk = File(df.absolutePath + ".fldrm_atomic_backup")
+                bk.writeBytes(df.readBytes())
+                atomicBackups[df] = bk
+            }
+            for (df in targets) {
+                applyFieldRename(df, fieldMap)
+            }
+        } catch (e: Exception) {
+            renameFailed = true
+            FrostLogUtils.warn("field rename atomic rollback triggered: %s", e.message)
+        }
+        if (renameFailed) {
+            for ((df, bk) in atomicBackups) {
+                try {
+                    if (bk.exists()) df.writeBytes(bk.readBytes())
+                } catch (r: Throwable) {
+                    FrostLogUtils.warn("field rename rollback restore %s fail: %s", df.name, r.message)
+                }
+            }
+            FrostLogUtils.warn("field rename aborted: all dex rolled back, app will run with original field names")
+        }
+        for (bk in atomicBackups.values) {
+            bk.delete()
+        }
+        return !renameFailed
+    }
+
+    /**
+     * 对单个 dex 应用字段重命名。fieldMap 必须由 buildFieldRenameMap 跨所有 dex 全局构建：
+     * 否则字段定义与跨 dex 引用错位（如 kotlinx.coroutines DispatchedContinuation.resumeMode
+     * 定义在 A dex、引用在 B dex，B 独立构建的 map 不含该字段 → 引用不改写 → NoSuchFieldError）。
+     * 失败时抛 IllegalStateException，由上层（applyFieldRenameAtomic）整体回滚。
+     */
+    internal fun applyFieldRename(dexFile: File, fieldMap: Map<FieldKey, String>): Boolean {
+        if (fieldMap.isEmpty()) return false
         val dex = try {
             com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
@@ -902,39 +1003,6 @@ object FrostDexObfuscator {
             return false
         }
         // 说明：原 0xFFFF string pool 预检经实测为过度保守，已移除。
-        val nativeClasses = HashSet<String>()
-        for (cd in dex.classes) {
-            for (m in cd.methods) {
-                if ((m.accessFlags and 0x100) != 0) {
-                    nativeClasses.add(cd.type)
-                    break
-                }
-            }
-        }
-        val fieldMap = HashMap<FieldKey, String>()
-        val usedNames = HashSet<String>()
-        for (cd in dex.classes) {
-            if (com.adfxcbnm.frostshell.config.FrostProtectRules.matchRules(cd.type)) continue
-            if (cd.type in nativeClasses) continue
-            if (isProtectedClass(cd.type, protectedClasses)) continue
-            for (f in cd.fields) {
-                if (f.name == "serialVersionUID") continue
-                if (f.annotations.any()) continue
-                if ((f.accessFlags and 0x1000) != 0) continue
-                if ((f.accessFlags and 0x4000) != 0) continue
-                var newName = com.adfxcbnm.frostshell.config.FrostNameDictionary.genFieldIdentifier(usedNames)
-                    ?: genRandomName(3 + random.nextInt(5))
-                var guard = 0
-                while (usedNames.contains(newName) && guard++ < 8) {
-                    newName = com.adfxcbnm.frostshell.config.FrostNameDictionary.genFieldIdentifier(usedNames)
-                        ?: genRandomName(3 + random.nextInt(5))
-                }
-                usedNames.add(newName)
-                fieldMap[FieldKey(cd.type, f.name, f.type)] = newName
-            }
-        }
-        if (fieldMap.isEmpty()) return false
-
         var renamedFields = 0
         var touchedMethods = 0
         val newClasses = ArrayList<ClassDef>(dex.classes.size)
@@ -1014,8 +1082,7 @@ object FrostDexObfuscator {
                 true
             } catch (v: Exception) {
                 dexFile.writeBytes(backup.readBytes())
-                FrostLogUtils.warn("field rename verify failed, rolled back: %s (%s)", dexFile.name, v.message)
-                false
+                throw IllegalStateException("field rename verify failed for ${dexFile.name}: ${v.message}", v)
             }
         } catch (e: Exception) {
             if (backup.exists()) {
@@ -1025,8 +1092,7 @@ object FrostDexObfuscator {
                     // 忽略回滚失败
                 }
             }
-            FrostLogUtils.warn("field rename failed for %s: %s", dexFile.name, e.message)
-            false
+            throw IllegalStateException("field rename failed for ${dexFile.name}: ${e.message}", e)
         } finally {
             backup.delete()
         }

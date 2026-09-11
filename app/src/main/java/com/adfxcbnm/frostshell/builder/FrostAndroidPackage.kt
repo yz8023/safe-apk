@@ -790,11 +790,18 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
                 if (isMethodOverload()) {
                     FrostDexObfuscator.applyMethodOverload(dexFile)
                 }
-                if (isFieldRename()) {
-                    FrostDexObfuscator.applyFieldRename(dexFile, componentProtected)
-                }
             } catch (e: Exception) {
                 FrostLogUtils.warn("WARNING: file-level dex obfuscation %s fail: %s", dexFile.name, e.message)
+            }
+        }
+        // 字段重命名跨 dex 原子执行：与类重命名同因（跨 dex 引用错位 → NoSuchFieldError，
+        // 如 kotlinx.coroutines DispatchedContinuation.resumeMode 定义与引用分处不同 dex）。
+        // 任一 dex 失败则整体回滚并放弃本次字段重命名。
+        if (isFieldRename()) {
+            try {
+                FrostDexObfuscator.applyFieldRenameAtomic(dexFiles, componentProtected)
+            } catch (e: Exception) {
+                FrostLogUtils.warn("WARNING: field rename pass fail: %s", e.message)
             }
         }
         // 阶段2.5：类重命名（跨 dex 原子执行）。必须与其它文件级 pass 分离：

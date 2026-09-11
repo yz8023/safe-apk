@@ -226,16 +226,30 @@ object FrostClassRenamer {
                 if (nt == v.value) v else ImmutableTypeEncodedValue(nt!!)
             }
             is FieldEncodedValue -> {
-                val nf = remapFieldRef(v.value, classRenameMap)
-                if (nf === v.value) v else ImmutableFieldEncodedValue(nf as ImmutableFieldReference)
+                val base = v.value
+                val nf = remapFieldRef(base, classRenameMap)
+                val imm = if (nf is ImmutableFieldReference) nf
+                else ImmutableFieldReference(nf.definingClass, nf.name, nf.type)
+                if (imm.definingClass == base.definingClass && imm.name == base.name && imm.type == base.type) v
+                else ImmutableFieldEncodedValue(imm)
             }
             is MethodEncodedValue -> {
-                val nm = remapMethodRef(v.value, classRenameMap)
-                if (nm === v.value) v else ImmutableMethodEncodedValue(nm as ImmutableMethodReference)
+                val base = v.value
+                val nm = remapMethodRef(base, classRenameMap)
+                val imm = if (nm is ImmutableMethodReference) nm
+                else ImmutableMethodReference(nm.definingClass, nm.name, nm.parameterTypes.map { it.toString() }, nm.returnType)
+                if (imm.definingClass == base.definingClass && imm.name == base.name && imm.returnType == base.returnType &&
+                    imm.parameterTypes.map { it.toString() } == base.parameterTypes.map { it.toString() }
+                ) v
+                else ImmutableMethodEncodedValue(imm)
             }
             is EnumEncodedValue -> {
-                val nf = remapFieldRef(v.value, classRenameMap)
-                if (nf === v.value) v else ImmutableEnumEncodedValue(nf as ImmutableFieldReference)
+                val base = v.value
+                val nf = remapFieldRef(base, classRenameMap)
+                val imm = if (nf is ImmutableFieldReference) nf
+                else ImmutableFieldReference(nf.definingClass, nf.name, nf.type)
+                if (imm.definingClass == base.definingClass && imm.name == base.name && imm.type == base.type) v
+                else ImmutableEnumEncodedValue(imm)
             }
             is ArrayEncodedValue -> {
                 var dirty = false
