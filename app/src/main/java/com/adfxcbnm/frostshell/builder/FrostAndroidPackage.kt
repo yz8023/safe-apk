@@ -785,10 +785,12 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
                     FrostDexObfuscator.applyArithmeticObfuscation(dexFile)
                 }
                 if (isControlFlow()) {
-                    FrostDexObfuscator.applyControlFlow(dexFile)
+                    // DISABLED: RewrittenClassDef 序列化破坏 invoke-direct/range
+                    FrostLogUtils.info("control flow: disabled (known dexlib2 rewrite issue)")
                 }
                 if (isCallIndirection()) {
-                    FrostDexObfuscator.applyCallIndirection(dexFile)
+                    // DISABLED: RewrittenClassDef 序列化破坏 invoke-direct/range
+                    FrostLogUtils.info("call indirection: disabled (known dexlib2 rewrite issue)")
                 }
                 if (isMethodOverload()) {
                     FrostDexObfuscator.applyMethodOverload(dexFile)
