@@ -20,7 +20,7 @@
 - **minSdk / targetSdk**：`26` / `34`（compileSdk 34，buildTools 34.0.0）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
 - **当前版本**：`9.10.46`（versionCode 88）。
-- **commit 哈希**：`3d4ac95`（HEAD，版本号 9.10.46）；`ab960e1`（v9.10.45）；`eef35f8`（抽取全量修复，已推送）；`94d6a35`（字段/类重命名原子化）。
+- **commit 哈希**：`2f8cee9`（HEAD，版本号 9.10.46）；`ab960e1`（v9.10.45）；`eef35f8`（抽取全量修复，已推送）；`94d6a35`（字段/类重命名原子化）。
 - **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260911-fix-anr-frost-group-round-float`）。
 - **备用镜像**：`https://kkgithub.com/yz8023/safe-apk.git`（无法直连 GitHub 时使用）。
 
@@ -105,7 +105,7 @@ GitHub 相关下载（.so/.jar/element）失败时按序尝试代理：
 - **已完成**：v9.10.44 全量类/字段重命名（跨 dex 原子化）、`Debug 信息移除`、FrostShell 引擎抽取上线、全量抽取修复（方法级 methodFilter 与类级 excludeRules 均不再跳过抽取，共享 code 统计按 dex 分桶消除竞态）、App UI（Compose）+ 悬浮按钮；v9.10.46 池对齐两遍结构修复（见 §9）。
 - **进行中**：加固产物真机冷启动最终复测（palm/gitapp 加固后确认不再抛 VerifyError，详见 §9；抽取侧修复已端到端验证，待真机确认）。
 - **已搁置**：FrostShell-CLI（Python 版命令行加固器，见 `FrostShell-CLI/`）；多引擎/插件化架构改造。
-- **最近可运行 commit**：`3d4ac95`（HEAD，v9.10.46，池对齐两遍结构修复 + 版本号更新）；`ab960e1`（v9.10.45，已推送远程）。
+- **最近可运行 commit**：`2f8cee9`（HEAD，v9.10.46，池对齐两遍结构修复 + 版本号更新）；`ab960e1`（v9.10.45，已推送远程）。
 
 ## 7. 待开发内容
 
