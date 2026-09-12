@@ -48,6 +48,7 @@ import java.util.Comparator
 import java.util.HashMap
 import java.util.Locale
 import java.util.Properties
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.Deflater
@@ -662,7 +663,9 @@ abstract class FrostAndroidPackage protected constructor(builder: Builder) {
 
     fun extractDexCode(packageDir: String, dexCodeSavePath: String, soKey: ByteArray) {
         val dexFiles = getDexFiles(getDexDir(packageDir))
-        val instructionMap = HashMap<Int, List<Instruction>>()
+        // 阶段3 各 dex 并行抽取并并发写 map，HashMap 并发 put 可能丢条目（导致 dex 块缺失、
+        // 池块级联错位），改用 ConcurrentHashMap 保证每个 dexNo 恰好一个非空条目。
+        val instructionMap = ConcurrentHashMap<Int, List<Instruction>>()
         val shellConfig = FrostShellConfig.getInstance()
         shellConfig.randomizeForProtect()
         shellConfig.setKeyShard4Hex(FrostKeyUtils.toHex(Arrays.copyOfRange(soKey, 12, 16)))
