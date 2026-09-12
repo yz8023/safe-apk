@@ -36,13 +36,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
 
 object FrostDexUtils {
-    // 按 dex 分桶的 code_offset 出现次数统计。原先使用单一共享 map 并在每次
-    // saveCodeOffAppear 中 clear()：阶段3 并行抽取时，各 dex 线程的 clear 会互相
-    // 冲掉对方刚写入的计数，使共享 code_off 的判定在 0/1/2 间随机抖动。被误判为
-    // unique 的共享方法会被抽取入池，而壳 so 按「跳过共享 code 方法」的顺序消费
-    // 池条目，池内多出的条目会让后续方法的还原位全部向后错位，形成 VerifyError。
-    // 改为 inner 桶后各 dex 独立统计，且不再在抽取过程中清空其它 dex 的数据。
-    private val codeOffAppearMap = ConcurrentHashMap<Int, ConcurrentHashMap<Int, Int>>()
     private val KEEP_IN_PLACE_PREFIXES = arrayOf("Landroidx/compose/")
 
     /**
@@ -141,21 +134,6 @@ object FrostDexUtils {
         return ImmutablePair(keepClassesCount.get(), totalClassesCount.get())
     }
 
-    private fun saveCodeOffAppear(dex: Dex, dexIndex: Int) {
-        val bucket = ConcurrentHashMap<Int, Int>()
-        val classDefs = dex.classDefs()
-        for (classDef in classDefs) {
-            val classDataOffset = classDef.classDataOffset
-            if (classDataOffset == 0) continue
-            val classData = dex.readClassData(classDef)
-            for (method in classData.allMethods()) {
-                if (method.codeOffset == 0) continue
-                bucket.merge(method.codeOffset, 1) { a, b -> a + b }
-            }
-        }
-        codeOffAppearMap[dexIndex] = bucket
-    }
-
     @Throws(IOException::class)
     fun renamePackageName(dexFilePath: File, newDexFilePath: File, slashShellPackageName: String) {
         val dexBackedDexFile = loadDexPreservingVersion(dexFilePath)
@@ -176,16 +154,6 @@ object FrostDexUtils {
         })
         val dexFile = dexMethodRewriter.getDexFileRewriter().rewrite(dexBackedDexFile)
         DexFileFactory.writeDexFile(newDexFilePath.absolutePath, dexFile)
-    }
-
-    private fun getCodeOffAppearCount(dexIndex: Int, codeOff: Int): Int {
-        return try {
-            val appearCount = codeOffAppearMap[dexIndex]?.get(codeOff)
-            appearCount ?: 0
-        } catch (e: Exception) {
-            e.printStackTrace()
-            0
-        }
     }
 
     fun getDexNumber(dexName: String): Int {
@@ -209,10 +177,32 @@ object FrostDexUtils {
         val dumpJSON = if (dumpCode) JSONArray() else null
         try {
             dex = Dex(dexFile)
-            val dexNumber = getDexNumber(dexFile.name)
             randomAccessFile = RandomAccessFile(outDexFile, "rw")
             val classDefs = dex.classDefs()
-            saveCodeOffAppear(dex, dexNumber)
+            // 关键修复（v9.10.46）：壳 so 还原时按「方法记录的 method_index」直接索引池条目
+            // vector（见 so 0xa0868 vector[methodIndex]），并非按池文件顺序消费。因此：
+            //  1. 池条目必须按 method_index 升序排列（由 FrostMultiDexCodeUtils 排序保证）；
+            //  2. method_ids 中的空洞（abstract/native 无 code、insns 为空的方法）必须用
+            //     size=0 的占位条目补齐，否则 vector 紧实排列后 method_index 索引错位，
+            //     非 abstract 方法会拿到相邻方法的条目，还原出的指令与 outs_size 不匹配，
+            //     类加载抛 VerifyError「invalid argument count exceeds outsSize」。
+            //     实测 palm classes.dex(61234 有 code 方法)：未排序池按 method_index 索引
+            //     仅 9/61234 命中，错位率 99.985%。
+            //  3. 共享 code_item 的后续方法：第一次出现时抽取并 stub，之后的同名 codeOff
+            //     必须用缓存的原始指令入池（读取已被 stub 的区会拿到 return 序列）。
+            //  4. 极小方法（insns 连对应 return 序列都放不下）：不 stub、保持原始指令，
+            //     仍入池；so 还原写回原始指令，行为等价无操作。
+            val originalInsnsCache = HashMap<Int, ByteArray>()
+            // v9.10.46 两遍结构：
+            //  第一遍按 class_data 顺序遍历所有方法，抽取指令、stub 写回、加密，按
+            //  method_index 存入 map（abstract/native/空指令方法不建条目，第二遍统一补占位）。
+            //  第二遍按 method_ids 全表 0..methodCount 依次出池条目：map 命中的用已抽取
+            //  条目，未命中的用 size=0 占位。这样池条目数恒等于 method_ids 总数，且按
+            //  method_index 天然升序、完全连续。之所以不能只依赖 class_data 遍历：method_ids
+            //  中存在未在任何 class_data 声明的方法索引（实测 palm classes.dex 65441 个
+            //  method_ids 中 4207 个索引在 class_data 中缺失），若只遍历 class_data 生成条目，
+            //  vector 紧实排列后索引仍会错位。
+            val entriesByIndex = HashMap<Int, Instruction>()
             for (classDef in classDefs) {
                 if (classDef.classDataOffset == 0) {
                     FrostLogUtils.noisy("class '%s' data offset is zero", classDef.toString())
@@ -223,38 +213,70 @@ object FrostDexUtils {
                 // 前缀型规则（Landroidx/.* 等）可被 .* 吞掉尾巴而侥幸命中，但精确类名规则
                 // （无 .* 通配）会因 extends 尾巴导致 matches() 失败，保护类被错误抽取。
                 // 统一用纯 descriptor 保证两类规则都精确匹配。
-                //
-                // 注意：此处不按 excludeRules/matchRules 跳过整类。壳 so 在还原时按「所有有
-                // code 的方法」顺序盲消费指令池条目（无 stub 检测，仅以池条目自带 methodIndex
-                // 作为 RC4 解密密钥）。只要某个 dex 内存在任一有 code 的方法未入池（无论被
-                // methodFilter 还是排除类规则跳过），该 dex 的池块即为「非全量」，顺序消费立即
-                // 错位：未入池方法会抢走相邻池条目、被覆写为其他方法的指令，还原后的方法头
-                // outs_size 与指令需求不匹配，class 加载抛 VerifyError「invalid argument count
-                // exceeds outsSize」。真实场景中 Android 应用 dex 几乎必然混排第三方类（kotlin/
-                // androidx/gson 等），excludeRules 类级跳过会让主 dex 变成非全量块，与 methodFilter
-                // 一样触发错位，故抽取阶段必须全类全量抽取。
-                // 关键词/类级排除仍作用于字符串加密、混淆、类字段重命名等其它 pass（它们按类名
-                // 独立处理、不影响方法体抽取的顺序对齐）。
                 val className = dex.typeNames()[classDef.typeIndex]
                 val classJSONObject = if (dumpCode) JSONObject() else null
                 val classJSONArray = if (dumpCode) JSONArray() else null
                 val classData = dex.readClassData(classDef)
                 val humanizeTypeName = FrostTypeUtils.getHumanizeTypeName(className)
                 for (method in classData.allMethods()) {
-                    if (getCodeOffAppearCount(dexNumber, method.codeOffset) > 1) {
-                        FrostLogUtils.noisy("codeoff 0x%x appear many times", method.codeOffset)
+                    val methodIndex = method.methodIndex
+                    if (method.codeOffset == 0) {
+                        // abstract/native 方法无 code：不建条目，第二遍按 method_ids 补占位
                         continue
                     }
-                    // 注意：此处不做 methodFilter 跳过。指令池是「被抽取方法」的子集，而壳 so 在还原时按
-                    // 「所有有 code 的方法」顺序盲消费池条目（无 stub 检测）。只要任一有 code 的方法未被抽取，
-                    // 池消费指针就会错位：未匹配方法会吃到下一条池条目、被覆写为其他方法的指令，还原后的
-                    // 方法头 outs_size 与指令需求不匹配，类加载抛 VerifyError「invalid argument count exceeds
-                    // outsSize」。基线全量抽取与该契约一致、可正常工作，故 methodFilter 规则在此阶段不生效，
-                    // 一律全量抽取 + stub + 入池，确保池与 so 消费顺序一一对齐。
-                    // methodFilter 语义如需保留，需要 so 支持按 methodIndex 精确查找（当前 so 不具备）。
-                    val instruction = extractMethod(dex, randomAccessFile, classDef, method, smaller)
-                    if (instruction == null) continue
-                    instructionList.add(instruction)
+                    val code = dex.readCode(method)
+                    val insnsCapacity = code.instructions.size
+                    if (insnsCapacity == 0) {
+                        // 无指令序列：不建条目，第二遍补占位
+                        continue
+                    }
+                    val insnsOffset = method.codeOffset + 16
+                    val insnsSize = insnsCapacity * 2
+                    val byteCode = ByteArray(insnsSize)
+                    val cached = originalInsnsCache[method.codeOffset]
+                    if (cached != null) {
+                        // 共享 code_item：第一次出现时已抽取并 stub，此处用缓存原始指令入池
+                        System.arraycopy(cached, 0, byteCode, 0, cached.size)
+                    } else {
+                        randomAccessFile.seek(insnsOffset.toLong())
+                        randomAccessFile.readFully(byteCode)
+                        originalInsnsCache[method.codeOffset] = byteCode.clone()
+                        val returnTypeName = dex.typeNames()[dex.protoIds()[dex.methodIds()[methodIndex].protoIndex].returnTypeIndex]
+                        val returnByteCodes = getReturnByteCodes(returnTypeName)
+                        if (insnsSize >= returnByteCodes.size) {
+                            // stub：return 指令 + NOP 填充（obfuscate 时 return 前掺入随机 NOP，
+                            // 破坏"清一色 return"模式）
+                            val stub = ByteArray(insnsSize)
+                            var cursor = 0
+                            if (!smaller) {
+                                val leadNops = SecureRandom().nextInt((insnsSize - returnByteCodes.size) / 2 + 1)
+                                for (k in 0 until leadNops) {
+                                    stub[cursor++] = 0
+                                    stub[cursor++] = 0
+                                }
+                            }
+                            System.arraycopy(returnByteCodes, 0, stub, cursor, returnByteCodes.size)
+                            cursor += returnByteCodes.size
+                            while (cursor < stub.size) {
+                                stub[cursor++] = 0
+                                stub[cursor++] = 0
+                            }
+                            randomAccessFile.seek(insnsOffset.toLong())
+                            randomAccessFile.write(stub, 0, stub.size)
+                        }
+                        // insnsSize < returnByteCodes.size 的极小方法：不 stub，保持原始指令
+                    }
+                    val aesKey = FrostShellConfig.getInstance().getInsnsCryptKey()!!
+                    val rc4Key = FrostCryptoUtils.buildInsnsRc4Key(aesKey, methodIndex)
+                    val encrypted = FrostCryptoUtils.rc4Crypt(rc4Key, byteCode)
+                    if (encrypted == null || encrypted.size != byteCode.size) {
+                        throw IllegalStateException("rc4 encrypt insns failed")
+                    }
+                    val instruction = Instruction()
+                    instruction.methodIndex = methodIndex
+                    instruction.instructionDataSize = insnsSize
+                    instruction.instructionsData = encrypted
+                    entriesByIndex[methodIndex] = instruction
                     if (dumpCode && classJSONArray != null) {
                         putToJSON(classJSONArray, instruction)
                     }
@@ -263,6 +285,13 @@ object FrostDexUtils {
                     classJSONObject.put(humanizeTypeName, classJSONArray)
                     dumpJSON.put(classJSONObject)
                 }
+            }
+            // 第二遍：按 method_ids 全表顺序出池条目，method_index 天然升序且完全连续。
+            // 未在 class_data 中声明的 method_index（抽象/本地方法、孤立索引）补 size=0 占位，
+            // 使壳 so 的 vector[methodIndex] 索引永不越界、永不取错相邻方法的条目。
+            val methodCount = dex.methodIds().size
+            for (methodIndex in 0 until methodCount) {
+                instructionList.add(entriesByIndex[methodIndex] ?: makePlaceholder(methodIndex))
             }
         } catch (e: Exception) {
             FrostIoUtils.close(randomAccessFile)
@@ -297,82 +326,15 @@ object FrostDexUtils {
         array.put(jsonObject)
     }
 
-    @Throws(Exception::class)
-    private fun extractMethod(
-        dex: Dex,
-        outRandomAccessFile: RandomAccessFile,
-        classDef: ClassDef,
-        method: ClassData.Method,
-        obfuscateIns: Boolean
-    ): Instruction? {
-        val returnTypeName = dex.typeNames()[dex.protoIds()[dex.methodIds()[method.methodIndex].protoIndex].returnTypeIndex]
-        val methodName = dex.strings()[dex.methodIds()[method.methodIndex].nameIndex]
-        val className = dex.typeNames()[classDef.typeIndex]
-        if (method.codeOffset == 0) {
-            FrostLogUtils.noisy(
-                "method code offset is zero,name =  %s.%s , returnType = %s",
-                FrostTypeUtils.getHumanizeTypeName(className), methodName, FrostTypeUtils.getHumanizeTypeName(returnTypeName)
-            )
-            return null
-        }
+    /**
+     * 占位条目：method_ids 中无 code 的方法（abstract/native 或空指令序列）生成的池条目。
+     * size=0 的数据区让壳 so 以 method_index 直接索引池条目 vector 时保持对齐。
+     */
+    private fun makePlaceholder(methodIndex: Int): Instruction {
         val instruction = Instruction()
-        val insnsOffset = method.codeOffset + 16
-        val code = dex.readCode(method)
-        if (code.instructions.size == 0) {
-            FrostLogUtils.noisy(
-                "method has no code,name =  %s.%s , returnType = %s",
-                FrostTypeUtils.getHumanizeTypeName(className), methodName, FrostTypeUtils.getHumanizeTypeName(returnTypeName)
-            )
-            return null
-        }
-        val insnsCapacity = code.instructions.size
-        val returnByteCodes = getReturnByteCodes(returnTypeName)
-        if (insnsCapacity * 2 < returnByteCodes.size) {
-            FrostLogUtils.noisy(
-                "The capacity of insns is not enough to store the return statement. %s.%s() ClassIndex = %d -> %s insnsCapacity = %d byte(s) but returnByteCodes = %d byte(s)",
-                FrostTypeUtils.getHumanizeTypeName(className), methodName, classDef.typeIndex,
-                FrostTypeUtils.getHumanizeTypeName(returnTypeName), insnsCapacity * 2, returnByteCodes.size
-            )
-            return null
-        }
-        instruction.methodIndex = method.methodIndex
-        instruction.instructionDataSize = insnsCapacity * 2
-        val byteCode = ByteArray(insnsCapacity * 2)
-        val insRandom = SecureRandom()
-        for (i in 0 until insnsCapacity) {
-            outRandomAccessFile.seek((insnsOffset + i * 2).toLong())
-            byteCode[i * 2] = outRandomAccessFile.readByte()
-            byteCode[i * 2 + 1] = outRandomAccessFile.readByte()
-        }
-        // stub 必须为合法指令序列：原实现 obfuscateIns 时填充随机字节，随机字节会被 ART
-        // verifier 解析为非法 invoke（参数寄存器数超过方法头 outs_size），类加载即抛
-        // VerifyError「invalid argument count exceeds outsSize」。改为 return 指令 + NOP 填充，
-        // reproduce obfuscateIns 时为 return 前掺入随机数量 NOP，破坏"清一色 return"模式。
-        val stub = ByteArray(insnsCapacity * 2)
-        var cursor = 0
-        if (obfuscateIns) {
-            val leadNops = insRandom.nextInt((insnsCapacity * 2 - returnByteCodes.size) / 2 + 1)
-            for (k in 0 until leadNops) {
-                stub[cursor++] = 0
-                stub[cursor++] = 0
-            }
-        }
-        System.arraycopy(returnByteCodes, 0, stub, cursor, returnByteCodes.size)
-        cursor += returnByteCodes.size
-        while (cursor < stub.size) {
-            stub[cursor++] = 0
-            stub[cursor++] = 0
-        }
-        outRandomAccessFile.seek(insnsOffset.toLong())
-        outRandomAccessFile.write(stub, 0, stub.size)
-        val aesKey = FrostShellConfig.getInstance().getInsnsCryptKey()!!
-        val rc4Key = FrostCryptoUtils.buildInsnsRc4Key(aesKey, method.methodIndex)
-        val encrypted = FrostCryptoUtils.rc4Crypt(rc4Key, byteCode)
-        if (encrypted == null || encrypted.size != byteCode.size) {
-            throw IllegalStateException("rc4 encrypt insns failed")
-        }
-        instruction.instructionsData = encrypted
-        outRandomAccessFile.seek(insnsOffset.toLong())
+        instruction.methodIndex = methodIndex
+        instruction.instructionDataSize = 0
+        instruction.instructionsData = ByteArray(0)
         return instruction
     }
 

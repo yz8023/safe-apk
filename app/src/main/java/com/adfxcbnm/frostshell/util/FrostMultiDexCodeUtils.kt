@@ -25,12 +25,17 @@ object FrostMultiDexCodeUtils {
             if (insns == null) continue
             dexCodeIndex.add(fileOffset)
             val dexCode = DexCode()
-            dexCode.methodCount = insns.size.toShort()
-            dexCode.insns = insns.toMutableList()
+            // 指令池必须按 methodIndex 升序写入：壳 so 还原时按方法记录的 method_index
+            // 直接索引池条目 vector（0xa0868 vector[methodIndex]），而非按池文件顺序消费。
+            // 抽取阶段已保证每个 method_index 恰有一条（含 abstract/native 的 size=0 占位
+            // 条目），此处排序后 vector[methodIndex] 即指向该方法的条目。
+            val sortedInsns = insns.sortedBy { it.methodIndex }
+            dexCode.methodCount = sortedInsns.size.toShort()
+            dexCode.insns = sortedInsns.toMutableList()
             fileOffset += 2
             insnsIndexList.add(fileOffset)
             dexCode.insnsIndex = insnsIndexList
-            for (ins in insns) {
+            for (ins in sortedInsns) {
                 fileOffset += 4
                 fileOffset += 4
                 fileOffset += ins.instructionsData.size

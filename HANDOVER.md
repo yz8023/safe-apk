@@ -1,36 +1,43 @@
 # HANDOVER.md · Android 加固工具（AndroidHardeningTool）
 
-> 项目代号：AndroidHardeningTool
+> 项目代号：AndroidHardeningTool / safe-apk
 > 交接对象：接手者
-> 交接目标：30 分钟内从零构建并成功运行本工具，产出加固后的 APK。
-> 交接日期：2026-09-05
+> 交接目标：30 分钟内从零构建并成功运行本工具，产出加固后的 APK，并在 GitHub Actions 上自动出包。
+> 交接日期：2026-09-12
 > 交接人：MonkeyCode AI 交接专家
+> 交接范围：Android 加固工具 App（AndroidHardeningTool）；FrostShell-CLI 为附属子项目。
 
 ---
 
 ## 1. 项目概述
 
-- **定位**：Android **APK 加固工具**（App 本身）。用户在 App 内选择设备上已安装的 APK，勾选加固/保护项，对目标 APK 执行 DEX 抽取加固（FrostShell 引擎）+ 运行时保护（native 检测）二合一处理，输出重签后的加固 APK。
-- **技术栈**：Kotlin 1.9.20（App 壳层 + FrostShell 引擎，包 `com.adfxcbnm.frostshell.*`）+ C++17（原生保护库 `protection.cpp`）+ Compose（Material3）UI。
-- **minSdk / targetSdk**：`26` / `34`（Android 8.0 - Android 14）。
+- **定位**：**Android APK 加固工具**（App 本身）。用户在 App 内选择设备上已安装/本地的 APK，勾选「DEX 加密 + 虚拟化」「SO 保护」「类/字段重命名」「字符串加密」「debug 移除」「JniBridge 注入抽取」等加固项，内置 FrostShell 加固引擎（Kotlin 移植版，代码抽取 + 指令池 + 壳 so 还原），输出重签名后的加固 APK。
+- **技术栈**：
+  - App 壳层 + FrostShell 引擎：Kotlin 1.9.20（包 `com.adfxcbnm.frostshell.*`）
+  - UI：Jetpack Compose（Material3，BOM 2023.10.01）
+  - 原生保护：C++17（`app/src/main/cpp/`，产出 libsecurity_check.so）
+  - 壳引擎 so：`app/src/main/assets/` 内置 `lib8012d9ae47c7f010.so` 等（编译期 asset，不打 native 库）
+- **minSdk / targetSdk**：`26` / `34`（compileSdk 34，buildTools 34.0.0）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
-- **当前版本**：`9.10.5`（versionCode 47）。
-- **commit 哈希**：`bf6145b`（v9.10.0），`467caea`（v9.10.1），`473efc6`（v9.10.2），（v9.10.3~v9.10.5 见 §6），`b896d9a`（v9.10.6，已推送并打 tag v9.10.6）。
-- **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260902-fix-manifest-resource-id`，PR #1）。
+- **当前版本**：`9.10.46`（versionCode 88）。
+- **commit 哈希**：`3d4ac95`（HEAD，版本号 9.10.46）；`ab960e1`（v9.10.45）；`eef35f8`（抽取全量修复，已推送）；`94d6a35`（字段/类重命名原子化）。
+- **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260911-fix-anr-frost-group-round-float`）。
+- **备用镜像**：`https://kkgithub.com/yz8023/safe-apk.git`（无法直连 GitHub 时使用）。
 
 ## 2. 开发环境
 
 | 项 | 要求 |
 |----|------|
 | OS | Linux（本工程验证于 Debian 12） |
-| JDK | 17（source/target 均为 17） |
-| Gradle | 8.4（wrapper，已含 gradle-wrapper.jar） |
+| JDK | 17（source/target 均 17，Java 17 特性） |
+| Gradle | 8.4（wrapper 自带） |
 | AGP | 8.2.0 |
 | Kotlin / Compose 编译器 | KGP 1.9.20 / kotlinCompilerExtensionVersion 1.5.5 |
 | compileSdk / build-tools | 34 / 34.0.0 |
-| NDK / CMake | 25.1.8937393 / 3.22.1（C++17，`app/src/main/cpp/`） |
-| 环境变量 | 无必须项；`JAVA_HOME` / `ANDROID_HOME` 可选 |
-| 第三方 Key | 无（签名 keystore 内置在 assets，默认口令，非机密） |
+| NDK / CMake | 25.1.8937393 / 3.22.1（C++17） |
+| 环境变量 | 非必须；推荐 `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64`、`ANDROID_HOME=<sdk>` |
+| local.properties | `sdk.dir=<Android SDK 路径>` |
+| 第三方 Key | 无外部密钥；签名 keystore 内置在 `app/src/main/assets/`（默认口令，非机密） |
 
 ## 3. 构建运行
 
@@ -39,218 +46,160 @@
 ```bash
 git clone https://github.com/yz8023/safe-apk
 cd safe-apk
+git checkout 260911-fix-anr-frost-group-round-float
 
-# 设置 SDK 路径（或写入 local.properties: sdk.dir=<你的 SDK 路径>）
+# 设置 SDK 路径
 export ANDROID_HOME=<你的 Android SDK 路径>
+echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-# 清理 CMake 缓存（若曾移动过项目目录，必须执行，否则报 CXX1409）
+# 清理 CMake 缓存（曾移动过项目目录时必须执行，否则报 CXX1409）
 rm -rf app/.cxx
 
 # 构建 debug APK
 ./gradlew :app:assembleDebug --no-daemon --console=plain
 ```
 
-- 产物：`app/build/outputs/apk/debug/app-debug.apk`（约 48MB）。
-- 安装运行：`adb install -r app/build/outputs/apk/debug/app-debug.apk`，启动「Android加固工具」，选择 APK 并加固。
-- **GitHub Actions 构建脚本**：`.github/workflows/build-apk.yml`（push 到 `main` 或手动 `workflow_dispatch` 触发，构建 debug APK 并上传 artifact）。
+- 产物：`app/build/outputs/apk/debug/app-debug.apk`（约 52MB）。
+- 安装运行：`adb install -r app/build/outputs/apk/debug/app-debug.apk`，启动「Android加固工具」→ 选择 APK → 勾选加固项 → 加固 → 输出到 `/storage/emulated/0/ADFXCBNM/`。
+- **GitHub Actions 构建脚本**：`.github/workflows/build-apk.yml`，两种触发方式：
+  1. push 到 `main` 分支（自动）；
+  2. GitHub 页面 Actions → 手动 `Run workflow`（workflow_dispatch）。
+  产物以上传 artifact `app-debug-apk`。
 
 ### 已知坑与解法
 
-1. **移动目录后 CMake 缓存报错**：`CXX1409 ... custom target ... could not be found` → `rm -rf app/.cxx` 后重构建。
-2. **deps jar 禁止混入 assets**：`libs/ironshell-deps.jar` 只含字节码；`ironshell.jks` 等资产放 `assets/`，否则 zipflinger 报 `already contains entry 'assets/ironshell.jks'`。
-3. **不要用 `ApkSignerTool.main` 签名**：会 `System.exit` 杀掉进程；用编程式 `com.android.apksig.ApkSigner.Builder`（v1/v2/v3）。
-4. **不要升级 apksig 依赖**：`com.android.tools.build:apksig:8.5.0` 需与 AGP 自带 apksig 一致，否则 `checkDebugDuplicateClasses` 报重复类。
+1. **移动目录后 CMake 缓存报错**：`CXX1409 ... custom target ... could not be found` → `rm -rf app/.cxx` 后重建。
+2. **deps jar 禁止混入 assets**：`libs/ironshell-deps.jar` 只含字节码；`ironshell.jks` 等资产放 `assets/`，否则打包报 `already contains entry 'assets/ironshell.jks'`。
+3. **离线构建依赖**：离线环境需提前在 gradle 缓存/本地 maven 就绪 compose 依赖，否则加 `--offline` 构建失败；参考 §4 配置镜像。
 
 ## 4. 依赖与镜像
 
-依赖获取优先级：**本地缓存 → 国内镜像 → 官方源 → 手动下载**。
+| 依赖 | 来源 |
+|------|------|
+| androidx.* / compose（BOM 2023.10.01） | Google Maven |
+| apksig 8.5.0（`com.android.tools.build:apksig`） | Google Maven（tool 自身用它签名产物） |
+| `app/libs/ironshell-deps.jar` | 本地 jar（Dex 操作引擎，必须保留在 libs/） |
+| `app/libs/bcprov-jdk15on-1.67.jar` | 本地 jar（crypto provider） |
+| Gradle 8.4 发行版 | gradle-wrapper 自动下载 |
+| NDK 25.1.8937393 / CMake 3.22.1 | sdkmanager 安装 |
 
-仓库源（`settings.gradle.kts`，已全部指向阿里云镜像）：
+获取优先级：**本地缓存 → 国内镜像 → 官方源 → 手动下载**。
 
 | 官方源 | 镜像地址 |
 |--------|----------|
 | Google Maven | `https://maven.aliyun.com/repository/google` |
+| JCenter | `https://maven.aliyun.com/repository/jcenter` |
 | Maven Central | `https://maven.aliyun.com/repository/central` |
-| Maven Public | `https://maven.aliyun.com/repository/public` |
-| Gradle 插件 | `https://maven.aliyun.com/repository/gradle-plugin` |
-| Gradle 发行版 | `https://services.gradle.org/distributions/gradle-8.4-bin.zip`（官方源） |
+| Gradle 发行版 | `https://mirrors.cloud.tencent.com/gradle/` |
 
-主要依赖：
-
-- `androidx.core:core-ktx:1.12.0`、`androidx.lifecycle:lifecycle-runtime-ktx:2.6.2`
-- `androidx.activity:activity-compose:1.8.1`
-- Compose BOM `2023.10.01`（ui / ui-graphics / material3 / material-icons-extended）
-- `com.android.tools.build:apksig:8.5.0`（重签名）
-- 本地 jar：`libs/ironshell-deps.jar`（11.8MB，FrostShell 引擎字节码，编译必需）
-
-备用镜像（阿里云不可用时）：
-
-- Google Maven：`https://maven.google.com`
-- Gradle 插件：`https://plugins.gradle.org/m2`
-- Maven Central：`https://repo1.maven.org/maven2`
-- Gradle 发行版：`https://mirrors.cloud.tencent.com/gradle/`
-- GitHub 依赖下载失败代理列表（依次尝试）：`https://ghproxy.com/`、`https://mirror.ghproxy.com/`、`https://gh-proxy.com/`、`https://ghfast.top/`、`https://ghps.cc/` 等，用法为 `https://<proxy>/https://github.com/...`
+GitHub 相关下载（.so/.jar/element）失败时按序尝试代理：
+`ghproxy.net`、`gh-proxy.com`、`mirror.ghproxy.com`、`ghps.cc`、`ghfast.top`、`ghproxy.cc`、`gitclone.com`、`kkgithub.com`、`hub.gitmirror.com`、`github.moeyy.xyz`、`hub.njuu.cf`、`gitproxy.click`。
+需手动下载的（如 `sdkmanager --install "ndk;25.1.8937393"`）按官方地址下载后放置于 `$ANDROID_HOME/ndk/25.1.8937393`。
 
 ## 5. 本地依赖服务
 
-- **无**。本工具为纯本地 APK 处理，不需要后端/数据库/Redis 等外部服务即可完整运行。加固全程在设备内完成。
+- 无。本工具为纯本地 APK 处理工具：不需要后端、数据库、Redis、网络服务。唯一外部运行时依赖为 Android 设备/SDK 环境。
 
 ## 6. 开发进度
 
-- **已完成**：
-  - FrostShell 引擎（Kotlin 移植）：DEX 抽取加固（`extractDexCode`）、SO 复制/加密、壳 dex 打包、编程式签名。
-  - 运行时保护：native 检测（Frida/Xposed/Magisk/Hook/完整性等 24 项，`ProtectionNative.kt` + `protection.cpp`）+ 自毁/CRITICAL 集合（`SecurityCheckProvider.java`）。
-  - L1 字符串加密（`FrostStringEncryptor`）+ SO 命名黑名单约束（`SoNamePolicy`）+ SO 随机化（`SoNameRandomizer.randomizeSafe`）。
-  - 方法级抽取（仅抽取指定函数）：`FrostProtectRules.memberRules` 按 类名.方法名/类名.* 过滤，未命中方法保留原始指令不进入指令池（`FrostDexUtils.extractAllMethods`），UI 入口在 FrostShell 引擎选项"仅抽取指定函数"。
-  - 加固类型选择 UI（FrostShell 引擎选项：keep-classes / smaller / verify-sign / ABI 剔除 / SO 随机化 / 伪装 / 字符串加密 / 方法级抽取）。
-  - 输出兜底：公共共享目录(如 /storage/emulated/0/Download) File 直写 ENOENT 时经 MediaStore.Downloads 落盘（`OutputSettings.copyOutput`），三条加固链路（传统/叠加/引擎）均接入。
-  - **v9.9.0 方法抽取增强（需求1）**：① `FrostProtectRules` 方法规则支持正则（`.*vip.*` 纯方法名正则、`regex:` 整体正则、类名正则 `Lcom/a/.*;.method`）；② 内置常用关键词模板（会员VIP/敏感业务/数据信息时间等，一键生成规则）+ 自定义方案保存/加载/删除（`MethodRuleTemplate`，prefs JSON）；③ 罗列所选 APK 的方法/类（`ApkMethodScanner`，解析 classes*.dex）+ 搜索/正则过滤 + 勾选生成规则（`MethodBrowserDialog`）。
-  - **v9.9.0 复制兜底强化（需求2）**：`OutputSettings.copyOutput` 多级兜底——① 删除旧目标后 `File.copyTo`；② MediaStore.Downloads（Q+，IS_PENDING+RELATIVE_PATH）；③ 应用专属 downloads 目录。返回值统一为实际落盘路径，落盘位置决定成功判定，彻底消除旧文件残留假成功（`deliveredPath` 三链路统一接入）。
-  - **v9.9.0 伪装加固修复（需求3）**：`SoNameDisguiser.disguise` 先核实 `libs/<abi>/` 下存在与 dex 引用对应的 so 文件，无匹配则不动 dex 并明确报错；多 ABI 改名原子化（任一失败回滚已改名的 so），杜绝"dex 已引用新名却无对应 so"的伪成功。
-  - **v9.10.1 方法浏览器重复 key 崩溃修复（需求4）**：`ApkMethodScanner.scan` 对扫描结果按 `MethodEntry.uniqueKey` 去重，杜绝同一类方法（多 dex 重复声明）在 `LazyColumn items(key=...)` 撞 key 导致 `IllegalArgumentException: Key ... was already used`。
-  - **v9.10.2 真机两项修复（需求5）**：
-    - ① 512MB 堆 OOM 根治：`FrostStringEncryptor`（字符串加密 L1）、`FrostDexUtils.splitDex`（keep-classes）、`SoNameDisguiser`（伪装加固）三处此前均构造 `ImmutableDexFile`+`ImmutableClassDef`，会对整 dex 所有类做 immutable 化与 TreeSet 排序并遍历全部指令，栈顶 `ImmutableClassDef.immutableSetOf` 正是 OOM 现场；全部改为共享委托式 `RewrittenClassDef`/`RewrittenDexFile`（`dex/RewrittenDexFile.kt`，`LinkedHashSet` 保序、交由 DexPool 原样写入），与反射注入同一手法。
-    - ② 伪装加固找不到壳库 so 失败：`FrostShellEngine.prepare` 原先仅在 `shell-files` 为空时从 assets 解压，而 `filesDir` 跨会话持久化——上次运行（随机化/伪装/OOM 中断）改写的 dex 引用（libvenSec.so）与 libs/ 内 so 文件失配，导致 `SoNameDisguiser` 匹配不到对应 so 中止；现改为每次加固前强制删除并重装 `shell-files`（assets 基线自洽：dex 引用 `lib8012d9ae47c7f010.so` 与各 ABI 文件一致），随机化/伪装始终基于干净基线。
-  - **v9.10.5 字符串加密参数寄存器类型破坏修复（需求7 续）**：
-    - 根因：v9.10.4 只修了跳转偏移，但 `FrostStringEncryptor.rewriteMethod` 提升 registerCount（baseRegs→+2）容纳临时寄存器时，未处理 **Dalvik 参数寄存器锚定最高位** 这一事实——registerCount 增加后参数整体上移，方法内指令对参数寄存器（this/显式参数）的原始编号引用不迁移，ART verifier 在入口把最高位寄存器标为参数类型而指令读取原编号（现无定义 local）→ `instance field access on object that has non-reference type Undefined`（onBackPressed 首条 iget 即 [0x0]）。
-    - 修复：方法头部插入参数搬移指令（新参数区 src=baseRegs+4+pos 逐槽搬回原参数区 dst=low+pos；this/引用用 MOVE_OBJECT_16、宽用 MOVE_WIDE_16、其余 MOVE_16），既有指令引用保持有效；临时寄存器置参数区之上（baseRegs+2/+3）；target 索引统一 +headShift；上限检查 newRegCount=baseRegs+参数槽数+4≤0xFFFF。
-    - 本地回归：javac+d8 样例（onBackPressed 分支形状 / packed-switch / 多参数 long+int+String+Object 与 static int+long+String），dexlib2 双校验（offset 边界 + iget/iput 对象寄存器类型流，等价 ART verifier）三组均为 0 错误，clinit 注入后亦 0。
-  - **v9.10.6 注入崩溃日志采集（需求8）**：
-    - 背景：palmPC 加固选项基本全选后启动闪退，tombstone 仅 `signal 11 SIGSEGV fault addr 0x0 / pc 0 lr 0 / #00 pc 0 <unknown>`——native 空函数指针调用崩溃发生在保护 native 层，Java 层 `Thread.setDefaultUncaughtExceptionHandler` 抓不到，无法定位真实崩溃点。
-    - 修复：注入的 `libsecurity_check.so` 新增 `Java_com_adfxcbnm_protect_SecurityCheckProvider_nativeInstallCrashHandler(String path)`，注册 SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE/SIGTRAP 的 SA_SIGINFO handler；`crashHandler` 以 async-signal-safe（open/write/close）写崩溃现场（时间戳/pid/tid/signal/pc/lr/sp/fault + `_Unwind_Backtrace` 32 帧）至日志文件并输出 logcat（`ADFXCBNM_CRASH` tag），记录后恢复默认 handler 并 `raise` 重放信号保留系统 tombstone。
-    - Java 层 `SecurityCheckProvider`：`onCreate` 加载 so 后立即调用 `installNativeCrashHandler()`，日志优先写 `getExternalFilesDir`（`/sdcard/Android/data/<pkg>/files/adfxcbnm_crash.log`，免权限可提取）+ 内部 filesDir 副本 + logcat；`writeCrashLog` 追加 pkg/pid/tid/nativeOk/features 上下文；`runAllChecks` 增加 `checks:start/checks:done` 阶段 marker。
-    - 本地回归：4 ABI so 编译通过（llvm-nm 校验 4 个 JNI 导出符号齐全）；dex 用 d8 重编（dexdump 校验 native 声明齐全）；gitapp_test.apk 叠加注入 classes2.dex+so+features.cfg 签名后资源与资产 SHA-256 完全一致。
-    - 日志提取：`/sdcard/Android/data/<pkg>/files/adfxcbnm_crash.log`（文件管理器/USB 直取）或 logcat 过滤 `ADFXCBNM_CRASH`。
-  - **v9.10.4 dex 改写 pass 跳转目标错位修复（需求7）**：
-    - ① 根因：`FrostStringEncryptor.rewriteMethod` 与 `FrostReflectionClinitInjector.injectHelperCall` 重建方法体时把 DexBacked 指令（保留原始 codeOffset）与新指令混拼进 `ImmutableMethodImplementation`——插入新指令后方法指令流右移，但 goto/if/switch 仍引用原始偏移，跳转目标落在指令中间，ART verifier 拒绝加载（真机崩溃 `void onBackPressed(): [0x15] target dex pc 0x28 is not at instruction start`，App 启动即闪退）。
-    - ② 修复：两处均改用 `MutableMethodImplementation(MethodImplementation)` 复制方法体——构造函数将全部 offset 指令经 codeAddress→index 映射转为 label 式 builder 指令，插入/替换后 `fixInstructions` 统一重算所有跳转偏移；`FrostStringEncryptor` 将命中 const-string 替换为密文常量并以 (idx+1) 锚点倒序插入 4 条（const/16 + invoke-static/range + move-result-object + move-object/16），因 Mutable 的 registerCount 为 private final，用 `MethodImplementation` facade 覆盖 `getRegisterCount()` 提升 2 个临时寄存器。
-    - ③ 本地回归：javac+d8 构造含分支/goto 的 onBackPressed、for 循环 clinit、packed-switch 的样例 dex，java -cp 直调两个 pass 后用 dexlib2 校验所有 offset 指令目标是否落在指令起始（等价 ART verifier 检查）：baseline=0，字符串加密 7 处后=0，clinit 注入后=0。
-  - **v9.10.3 manifest 写路径去 meditor 化（需求6）**：
-    - ① 根因：meditor(pxb `com.wind.meditor`/`pxb.android.axml`) 写新属性时「属性名→android 资源 ID」映射依赖 classloader 资源 `assets/public.xml`，目标 APK assets 未打包该文件 → `getResourceId()` 恒 -1，新增/改写属性丢 ID 或错位，在系统解析侧表现为 `appComponentFactory` 被写成非法字面量（如 "activity"）、activity 块丢失/桌面无图标。
-    - ② 修复：APK 写路径全部弃用 meditor，改用自研 `AndroidManifestModifier`：`modifyManifest` 新增 `appAttrs: List<ApplicationAttrPatch>` 参数，支持写 application 的 `name`/`appComponentFactory`（STRING 0x03）、`debuggable`/`extractNativeLibs`（BOOLEAN 0x12，true→data=-1/0xffffffff）；`FrostApkManifestEditor.writeApplicationName/writeAppComponentFactory/writeDebuggable` 与新增 `writeApplicationExtractNativeLibs` 全部改调 `AndroidManifestModifier`（保留 pxb `AxmlParser` 的只读属性读取）；`FrostApk.setExtractNativeLibs` 同步切换；AAB 路径本就无 meditor（protobuf `FrostAabManifestEditor`/`FrostAndroidResourcesEditor`，资源 ID 已正确），不动。
-    - ③ 本地回归：编译 `app/build/tmp/kotlin-classes/debug`+kotlin-stdlib+android.jar+ironshell-deps.jar 后 `java -cp` 直调引擎写方法跑 三步链（name→appComponentFactory→extractNativeLibs），重打包后 `aapt dump xmltree` 校验：新属性均带正确资源 ID（0x01010003/0x0101057a/0x010104ea）、类型正确（BOOLEAN 显示 0xffffffff）、MainActivity+MAIN/LAUNCHER+CoreComponentFactory 保留。
-  - **v9.10.0 崩溃修复（需求1-3）**：
-    - ① `FrostReflectionClinitInjector` 反射类名注入 OOM 修复：主循环改用 `Array<ClassDef>`，命中反射 clinit 的类经委托式 `RewrittenClassDef` 透传（不再重建 `ImmutableClassDef`，规避 dexlib2 TreeSet 排序+toString 的 512MB 堆打满）；写入用 `RewrittenDexFile`（`LinkedHashSet` 保持顺序，规避 `ImmutableDexFile` 全量排序）；`getMethods()` 合并 direct+virtual 迭代器；新增 `peelDebugInfo` 剥离 debugItems 不触发整体重建。
-    - ② Compose 动画/首页 OOM 缓解：随第一组 OOM 链路修复（dex 线程不再打满堆 → GC 压力下降 → UI 动画不再被挤压 OOM）。
-    - ③ `MethodBrowserDialog` LazyColumn 重复 key 崩溃修复：`MethodEntry` 增加 `parameterTypes`（解析 `protoIds().parametersOffset` 类型列表）与全局唯一 `uniqueKey`（类名.方法名+参数签名），`items(key={it.uniqueKey})`、选中集与规则生成全部改用 `uniqueKey`，消除方法重载导致的 key 冲突。
-    - 首页「函数抽取」上移：新增独立卡片（选 APK 后即见），内置「仅抽取指定函数」开关+已配置规则数摘要+「配置抽取规则」按钮（打开方法浏览器），同时保留设置页 FrostShell 引擎选项内的高级配置入口；版本提升至 v9.10.0。
-  - CI：`.github/workflows/build-apk.yml`。
-- **进行中**：（无）
-- **已搁置**：
-  - native 侧 VMP 解释器 / RC4 SO 解密 / ELF section 注入：仅文档对接点（`docs/NATIVE-DOCKING.md`），未实现。
-- **最近可运行的 commit**：`473efc6`（v9.10.2，已推送并打 tag）；v9.10.0 `bf6145b`、v9.10.1 `467caea`。（v9.10.3~v9.10.5 提交哈希见 §6）；v9.10.6 `b896d9a`（已推送并打 tag）。
+- **已完成**：v9.10.44 全量类/字段重命名（跨 dex 原子化）、`Debug 信息移除`、FrostShell 引擎抽取上线、全量抽取修复（方法级 methodFilter 与类级 excludeRules 均不再跳过抽取，共享 code 统计按 dex 分桶消除竞态）、App UI（Compose）+ 悬浮按钮；v9.10.46 池对齐两遍结构修复（见 §9）。
+- **进行中**：加固产物真机冷启动最终复测（palm/gitapp 加固后确认不再抛 VerifyError，详见 §9；抽取侧修复已端到端验证，待真机确认）。
+- **已搁置**：FrostShell-CLI（Python 版命令行加固器，见 `FrostShell-CLI/`）；多引擎/插件化架构改造。
+- **最近可运行 commit**：`3d4ac95`（HEAD，v9.10.46，池对齐两遍结构修复 + 版本号更新）；`ab960e1`（v9.10.45，已推送远程）。
 
 ## 7. 待开发内容
 
-| 功能 | 优先级 | 预估工时 | 前置依赖 |
+| 内容 | 优先级 | 预估工时 | 前置依赖 |
 |------|--------|----------|----------|
-| native VMP 指令解释器接入 | P2 | 16h | NDK 环境 + `docs/NATIVE-DOCKING.md` §2 方案 |
-| native RC4 SO 解密 + 自校验 | P2 | 8h | `docs/NATIVE-DOCKING.md` §3 |
-| ELF section 注入（vmp.bin） | P3 | 8h | `docs/NATIVE-DOCKING.md` §4 |
+| v9.10.46 真机冷启动复测（palm/gitapp 加固后不崩 VerifyError） | P0 | 4h | 真机/模拟器 |
+| 端到端加固回归测试（抽取计数 = 有 code 方法数 - 共享 code 数 的自动化断言） | P1 | 4h | 无 |
+| 池契约文档化（池格式 version=2、RC4 key、method_ids 全表对齐、与 so 对齐规则） | P1 | 2h | 无 |
+| 单测补充（dexlib2/dx 修复合写后验证、池序列化 round-trip、占位条目还原） | P1 | 8h | 无 |
+| 多 ABI（arm/x86）真机矩阵验证 so 还原一致性 | P1 | 4h | 真机矩阵 |
+| FrostShell-CLI 收敛复用 App 内引擎 | P2 | 8h | 无 |
+| 插件市场 / 多加固引擎接入 | P3 | 16h | 架构改造 |
 
 ## 8. 架构与关键模块
 
-### 引擎装配链路
+### 模块划分
 
-```
-MainActivity (UI + 开关) → FrostEngineOptions → FrostShellEngine.protectApk()
-→ FrostApk.Builder.build().protect() → FrostAndroidPackage.protect()
-  → FrostApk.process(): 解包 → extractDexCode(L1字符串加密+抽取) → junk code
-  → compressDexFiles → copyNativeLibs → encryptSoFiles → writeConfig → buildPackage(签名)
-```
+- **App 壳层**：`com.adfxcbnm.hardeningtool.*`（UI、配置面板、ApkMethodScanner、StageTracker、MethodRuleTemplate）。
+- **FrostShell 加固引擎**：`com.adfxcbnm.frostshell.*`
+  - `builder/FrostApk.kt`：对外入口 `protect() → process() → buildPackage()`。
+  - `builder/FrostAndroidPackage.kt`：加固管线编排（注入 JniBridge → splitDex(keep-in-place) → 字符串加密 → 文件级混淆 → 类/字段重命名 → 阶段3抽取 → 打包）。
+  - `builder/FrostIronShell.kt`：将 `ironshell.dens` 池与密钥补丁写入 assets so（符号打补丁）。
+  - `builder/FrostAab.kt` / `res/FrostAabManifestEditor.kt` / `res/FrostApkManifestEditor.kt`：APK/AAB 重打包与 manifest 改写。
+  - `dex/*`：Dex 操作（混淆、重命名、Junk 代码、字符串加密/解密、字符串池、JniBridge 注入）。
+  - `util/FrostDexUtils.kt`：Dex 抽取核心（extractAllMethods、stub 写入、saveCodeOffAppear）。
+  - `util/FrostMultiDexCodeUtils.kt`：指令池序列化（version=2）。
+  - `config/FrostProtectRules.kt` / `FrostShellConfig.kt`：排除规则与加固配置。
+  - `task/FrostThreadPool.kt`：并行抽取线程池（每 dex 一线程）。
+- **原生**：`app/src/main/cpp/*`（security_check 检测库）；壳还原在 assets so 内（ARM64 可逆）。
+- **前后端对接点**：无（纯本地，无网络服务端）。
+- **已知技术债**：抽取序列化与 assets 内壳 so 强耦合、无池格式权威文档、引擎无自动化单测；`ironshell-deps.jar` 为闭源二进制。
 
-### 核心模块
+### 关键路径说明（抽取 → 壳还原）
 
-| 模块 | 路径 | 职责 |
-|------|------|------|
-| 主界面 / 流程编排 | `hardeningtool/MainActivity.kt` | UI、APK 选择、加固编排、日志、`useFrostEngine` 开关 |
-| 引擎封装 | `hardeningtool/FrostShellEngine.kt` | `prepare` / `protectApk` / `findOutputApk` |
-| 引擎选项 | `hardeningtool/FrostEngineOptions.kt` | 加固配置数据类（含字符串加密/SO 随机化等） |
-| 抽取引擎 | `frostshell/builder/FrostAndroidPackage.kt` | `extractDexCode` / `copyNativeLibs` / `encryptSoFiles` / `buildPackage` |
-| 重打包/签名 | `frostshell/builder/FrostApk.kt` | 解包重打包 + 编程式 ApkSigner v1/v2/v3 |
-| 配置透传 | `frostshell/config/FrostShellConfig.kt` | 单例 JSON 序列化进 `assets/irn/.meta` |
-| 字符串加密 | `frostshell/dex/FrostStringEncryptor.kt` | L1 XOR 加密 pass + 静态 helper |
-| SO 命名策略 | `hardeningtool/SoNamePolicy.kt` / `SoNameRandomizer.kt` | 黑名单约束 + 随机名 + 兼容入口 |
-| 原生保护 | `ProtectionNative.kt` + `cpp/protection.cpp` | 24 项运行期检测 JNI 桥接 |
-| Manifest 编辑 | `hardeningtool/AndroidManifestModifier.kt` | 二进制 AXML 编辑 + application 属性写 patch（`appAttrs`）|
-
-### 前后端对接点
-
-- 引擎配置通过 `FrostEngineOptions`（数据类）传入；运行期配置经 `FrostShellConfig` 序列化到壳 APK `assets/irn/.meta`（JSON），字段名见 `FrostShellConfig.toJson()`：`insns_key`、`key_shard4`、`insns_store` 等。
-
-### 已知技术债
-
-- 引擎处理大 APK 时抽取阶段并行线程池占用内存较高。
-- `FrostStringEncryptor` 目前只处理 const-string 字面量，未覆盖 `fill-array-data` 等复合数据结构。
+`extractAllMethods`（每 dex 并行）→ 写入 stub（方法体重写为 return+load）+ `instructionMap[dexNo]=List<Instruction>` → `makeMultiDexCode`（按 dex 顺序序列化池）→ 池整体 AES 加密 → `FrostIronShell` 写入壳 so → 运行时壳 so 用 `aesKey‖LE(methodIndex)` 作 RC4 key 按方法顺序解密写回。
+壳 so 关键地址：JNI_OnLoad@0x9ffa8；RegisterNatives@0xb2120（10 项）；`ia()`=0x9e708、`rde`=0x9dd4c、`cbde`=0x9dcb4；池解析/写回主体 ≈0x9ec94/0x9ee50。
 
 ## 9. 代码概览与已知问题
 
-```
-app/
-├── build.gradle.kts               # v9.10.5 / versionCode 47
-├── libs/ironshell-deps.jar        # FrostShell 引擎字节码依赖（11.8MB，必需）
-└── src/main/
-    ├── AndroidManifest.xml
-    ├── cpp/CMakeLists.txt + protection.cpp   # 原生保护库
-    ├── assets/
-    │   ├── frostshell/            # 引擎运行时资源（libs/*.so, dex, build-key）
-    │   ├── so_name_presets.json / string_presets.json  # 伪装预设 / 加密关键词库
-    │   ├── lib/*/libsecurity_check.so  # 原生保护 .so（4 ABI）
-    │   └── ironshell.jks          # 引擎默认签名 keystore
-    └── java/com/adfxcbnm/
-        ├── hardeningtool/         # 壳层（MainActivity/FrostShellEngine/...）
-        ├── frostshell/            # 引擎 Kotlin（builder/config/dex/elf/model/res/task/util）
-        └── protect/               # SecurityCheckProvider.java（native 绑定）
-```
+- 结构简述：`app/src/main/java/com/adfxcbnm/` 下 `hardeningtool`（UI 壳）与 `frostshell`（引擎）两包，Kotlin 主代码约 60 文件；assets 下含壳 so、签名文件、安全库；`libs/` 两个本地 jar。
 
-**致命/严重问题（仅列此类）**：
+### 致命 / 严重问题
 
-- （无致命问题。编译 `assembleDebug` 通过，aapt2 badging 校验包名/版本正确。）
-- 轻微：`MainActivity.kt` 存在若干可空断言告警（`!!`），不影响功能。
+1. **加固产物 VerifyError（三次真机复现，已根因定位 + 抽取侧修复，待真机终验）**
+   - 现象：`java.lang.VerifyError: Verifier rejected class ...MainActivity ... invalid argument count (8) exceeds outsSize (2)`，涉及 onCreate/onBackPressed/onDestroy/onActivityResult/c/e/f/b/d 等方法的指令因还原错位被换成了其他方法的字节（指令 outs 需求大于声明）。
+   - 根因（已完全定位，反汇编壳 so 证实）：壳 so 还原时按「方法记录的 method_index」直接索引池条目 vector（`0xa0868 vector[methodIndex]`），**并非按池文件顺序消费**，也**不跳过共享 code_item**。抽取侧必须保证：池条目数 == method_ids 总数、每个 method_index 恰一条、且按 method_index 升序连续排列。此前两个错位源：① 抽取阶段按 methodFilter/excludeRules 类级跳过方法（palm classes.dex 曾仅 9/61234 条入池）；② 即使全量抽取，method_ids 中仍有大量索引未在任何 class_data 中声明（palm classes.dex 65441 个 method_ids 中 4207 个缺失，classes7 65266 中 11195 个缺失），只遍历 class_data 生成的紧实池 vector 仍会错位（对齐率仅 9/62159）。
+   - 修复（v9.10.46，两遍结构）：第一遍按 class_data 顺序遍历所有方法，抽取指令、stub 写回（共享 code 用缓存原始指令、极小方法不 stub）、RC4 加密后按 method_index 存入 map；第二遍按 `dex.methodIds()` 全表 `0..methodCount` 顺序出池条目，map 未命中的索引全部补 size=0 占位条目。池条目数恒等于 method_ids 总数、天然升序、完全连续，`vector[methodIndex].methodIndex == methodIndex` 恒成立。
+   - 端到端验证（JVM，`/tmp/pool_test/verify_endtoend.java`）：对 palm 全部 5 个 dex 执行真实抽取+加密+写池，独立实现 RC4 解密逐条对比原 dex 指令——池条目数 == method_ids 数、连续唯一、解密命中 100%（classes.dex 61234/61234，classes7 54071/54071，classes4/2/8 全 PASS），不匹配 0。
+2. **抽取/壳契约依赖闭源 so，无文档**：池格式 version=2（version+dexCount+dexCodesIndex+各 dex[methodCount+条目区]），壳 so 以 method_index 索引条目、RC4 key = AES key + method_index(LE)，共享 code 还原用缓存原始指令；任何抽取侧改动必须保持「池 = method_ids 全集、按 method_index 升序、缺失索引占位」。该契约已写死并附端到端验证工具，应加回归断言（见 §7 P1 项）。
 
 ## 10. 架构简评
 
-- **架构模式**：加固引擎采用「Builder 装配 → 分阶段 pipeline 处理」；UI 与引擎解耦（`FrostEngineOptions` 数据类隔离）；native 层通过 JNI 桥接。
-- **整体评价**：良好。模块边界清晰，配置透传链路完整，可扩展性强（新增开关只需 EngineOptions + Builder + UI 三处）。
-- **改进方向**：
-  1. 抽取引擎的并行线程池改为受控调度（当前 `CountDownLatch` 全量并行）。
-  2. 将 `FrostShellConfig` 单例改为注入式，便于引擎级单元测试。
-  3. L1 字符串加密补充 `fill-array-data` 处理与 helper 复用池。
-  4. native 检测项输出结构化结果（当前为布尔合并）。
-  5. 增加引擎中间产物的幂等清理（异常时残留临时目录）。
+- **定位**：中等规模的单 App 加固工具，模块划分为「UI 壳 + 引擎」两层。
+- **整体评价**：良好。管线编排清晰（FrostAndroidPackage 阶段化），抽取/池/补丁链路有明确的时序注释。
+- **突出问题与改进方向**：
+  1. 抽取-池-壳 so 三方 `顺序契约` 无自动化测试与文档，回归成本高 → 建立「抽取计数 = 有 code 全集 - 共享 code」断言 + 池格式文档。
+  2. 壳 so 只验算了 ARM64 恢复，多 ABI（arm/x86）还原的一致性未覆盖 → 真机矩阵验证。
+  3. 并行抽取的共享状态（codeOffAppearMap）出现过竞态；已分桶修复，但建议进一步把「每 dex 独立统计」前置为流水线步骤（phase），避免在任务内做共享写。
+  4. 引擎核心仍依赖闭源 `ironshell-deps.jar`，无源码可审 → 规划逐步以 dx 库替代或容器化。
+  5. UI 层缺测试；加固流程无“进度-产物-日志”统一的持久化记录 → 增加运行日志落盘便于线上排查。
 
 ## 11. 测试建议
 
-- **核心流程**：选 APK → 开 FrostShell 引擎 → 加固 → 输出加固 APK → 校验能安装运行。
-- **重点测试模块**：
-  - 字符串加密开关：开启后产物中目标敏感串（vip/token）不应以明文出现；关闭时产物不变。
-  - SO 随机化 / 伪装：`assets/irn/{abi}/*.so` 名称符合黑名单规避约束。
-  - keep-classes / smaller / verify-sign / ABI 剔除各开关组合。
-  - 运行时保护：在 root/Frida 环境触发检测，确认 App 行为符合预期。
-- **已知边界问题**：
-  - minSdk 26 以下设备不可装。
-  - 含 Compose 等 keep-in-place 类的目标 APK 依赖 `FrostDexUtils.dexContainsKeepInPlace` 分支。
-  - 目标 APK 存在 VMP 等极端混淆时抽取可能失败（引擎有 `_split.dex` 兜底）。
+- 核心流程（选择 APK → 加固 → 签名 → 输出）本地可走通，已用 `libs` + dx 库做过抽取计数与管线 smoke 验证（RunFrost / CountExtracted / SimFilterFix，见 `/tmp/opencode/regress/`）。
+- **端到端池对齐验证（v9.10.46 新增）**：`/tmp/pool_test/verify_endtoend.java` 对目标 dex 执行真实抽取+加密+写池，独立 RC4 解密逐条对比原 dex 指令，断言池条目数 == method_ids 数、连续唯一、解密命中 100%。palm 5 个 dex 已全部 PASS。
+- **重点测试模块/场景**：
+  - 加固后 APK **真机安装冷启动**：确认不再抛 VerifyError（v9.10.46 两遍结构修复的核心验收）。
+  - 含大量第三方库混排的大型 APK（主 dex > 5 万方法）抽取后池序对齐。
+  - 多 dex、keep-in-place（Compose）类处理、共享 code_item 方法、abstract/native 方法。
+  - 类/字段重命名跨 dex 原子性（任一 dex 失败整体回滚）。
+- **已知/可能边界问题**：池 > 512KB 单 dex 缓冲区的块内条目截断风险（so 侧验证过解析头）；并行抽取下 GC 压力；超 100MB 应用处理时长。
 
 ## 12. 账号与密钥
 
-- **无外部服务**，无 API Key。
-- 签名 keystore：`assets/ironshell.jks`（内置默认，默认口令，非机密；如需更换，替换文件并在引擎 `setSignatureConfig` 传入新 keystore/别名/口令）。
-- 如未来接入任何后端/密钥，一律使用占位符 `<YOUR_API_KEY>`，不得硬编码真实密钥。
+- **功能依赖**：无任何后台 API。
+- **签名**：工具产出 APK 使用内置 keystore（`assets/ironshell.jks`，默认口令），接管无需申请密钥。
+- **GitHub**：若需 CI 自动出包，仓库绑定 GitHub token/Secret（公开仓库可不用）；推送到 `main` 触发 `.github/workflows/build-apk.yml`。
+- 一切真实密钥以占位符处理，勿写入仓库。
 
 ## 13. 常见问题
 
-| 报错 | 解法 |
+| 问题 | 解法 |
 |------|------|
-| `CXX1409 custom target could not be found` | `rm -rf app/.cxx` 后重构建 |
-| `Zip file already contains entry assets/...` | deps jar 只放字节码，资产放 `assets/` |
-| `checkDebugDuplicateClasses` | apksig 版本与 AGP 一致（8.5.0），勿随意升级 |
-| 依赖下载失败 | 换镜像（第 4 节）或 GitHub 代理 |
-| 加固产物无法解析 | 检查 `--auto-verify` 日志；清单资源 ID 重写（v9.6.6 修复项）+ meditor 缺 `public.xml` 导致属性丢 ID/错位（v9.10.3 已去 meditor，见 §6）+ dex 改写 pass 偏移错位 VerifyError（v9.10.4 已修）+ 提升 registerCount 未重映射参数引用致 Undefined VerifyError（v9.10.5 已修，见 §6） |
+| 加固后 App 冷启动 `VerifyError: invalid argument count exceeds outsSize` | v9.10.46 池对齐两遍结构已修复（按 method_ids 全表出条目 + 缺失索引 size=0 占位）；若仍崩按 §9 检查壳 so 消费链对齐 |
+| `CXX1409 custom target could not be found` | `rm -rf app/.cxx` 后重建 |
+| 打包报 `already contains entry 'assets/ironshell.jks'` | deps jar 不能混入 assets；jks 仅放 `app/src/main/assets/` |
+| `apksig` 类找不到（CLI 侧 RunFrost） | classpath 追加 `apksig-8.2.0.jar`（`~/.gradle/caches/modules-2/files-2.1/com.android.tools.build/apksig/...`） |
+| 依赖下载失败 | 按 §4 优先级：本地缓存 → aliyun 镜像 → 官方 → 手动；GitHub 下载失败用上表代理 |
+| `--offline` 构建失败 | 说明部分依赖未入缓存；去掉 `--offline` 联网拉依赖 |
+| targetSdk 34 安装提示未知 | 需 Android 8.0+（minSdk 26） |
 
 ## 14. 验收标准
 
-1. **构建**：按第 3 节命令，从干净环境成功产出 `app-debug.apk`（`aapt dump badging` 显示 `package name='Forinxy.safe' versionName='9.10.5' versionCode='47'`）。
-2. **运行**：安装并启动到首页，能选择 APK 并完成一次加固，产物可安装运行。
-3. **CI**：push 到 `main` 后 `.github/workflows/build-apk.yml` 自动构建出 debug APK 并上传 artifact。
-4. 三样交接产物齐备：`HANDOVER.md`、`AndroidHardeningTool源码.zip`、`AndroidHardeningTool_v9.10.5_debug.apk`。
+1. `./gradlew :app:assembleDebug` 成功产出 `app-debug.apk`（约 52MB），安装后可启动工具首页。
+2. 用该工具加固一个真实 APK，输出重签名加固包，真机安装冷启动**不抛 VerifyError**、功能正常。
+3. push 到 `main` 或手动 Run workflow 后，GitHub Actions 自动构建并产出 `app-debug-apk` artifact。
+4. （交接快照）源码包 `Android加固工具_v9.10.46_source.zip` 与 `Android加固工具_v9.10.46_debug.apk` 与仓库 HEAD 一致。
