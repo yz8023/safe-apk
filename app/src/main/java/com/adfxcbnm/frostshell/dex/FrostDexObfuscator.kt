@@ -826,7 +826,7 @@ object FrostDexObfuscator {
                 if (existingSigs.contains(sig)) continue
                 existingSigs.add(sig)
                 val dummyImpl = ImmutableMethodImplementation(
-                    1,
+                    2,
                     listOf(ImmutableInstruction10x(Opcode.RETURN_VOID)),
                     emptyList(),
                     emptyList()

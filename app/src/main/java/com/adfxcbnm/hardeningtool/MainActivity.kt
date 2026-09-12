@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.adfxcbnm.hardeningtool.ui.theme.AndroidHardeningToolTheme
+import com.adfxcbnm.hardeningtool.motion.springPress
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -1204,7 +1205,7 @@ fun MainScreen() {
 
                 // APK Selection Card
                 ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().springPress(),
                     shape = RoundedCornerShape(16.dp),
                     elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
                 ) {
@@ -1297,7 +1298,7 @@ fun MainScreen() {
 
                 // 签名开关卡片
                 ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().springPress(),
                     shape = RoundedCornerShape(16.dp),
                     elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
                 ) {
@@ -1361,7 +1362,7 @@ fun MainScreen() {
 
                 // 函数抽取卡片
                 ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().springPress(),
                     shape = RoundedCornerShape(16.dp),
                     elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
                 ) {
@@ -1504,7 +1505,7 @@ fun MainScreen() {
 
                 // 代码混淆卡片（字符串加密 + 字典 + DEX pass 开关，设置页同步管理）
                 ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().springPress(),
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1632,7 +1633,7 @@ fun MainScreen() {
 
                 // FrostShell Engine Toggle
                 ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().springPress(),
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Column {
@@ -1926,7 +1927,7 @@ fun MainScreen() {
                     }
                 }
                 ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().springPress(),
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {

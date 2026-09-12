@@ -19,8 +19,8 @@
   - 壳引擎 so：`app/src/main/assets/` 内置 `lib8012d9ae47c7f010.so` 等（编译期 asset，不打 native 库）
 - **minSdk / targetSdk**：`26` / `34`（compileSdk 34，buildTools 34.0.0）。
 - **包名 / 应用名**：applicationId `Forinxy.safe`；应用名「Android加固工具」；namespace `com.adfxcbnm.hardeningtool`。
-- **当前版本**：`9.10.46`（versionCode 88）。
-- **commit 哈希**：`2f8cee9`（HEAD，版本号 9.10.46）；`ab960e1`（v9.10.45）；`eef35f8`（抽取全量修复，已推送）；`94d6a35`（字段/类重命名原子化）。
+- **当前版本**：`9.10.48`（versionCode 90）。
+- **commit 哈希**：`22b8354`（HEAD，版本号 9.10.48，回退至v9.10.41抽取逻辑）；`e8c2126`（v9.10.47多dex对齐）；`2f8cee9`（v9.10.46两遍结构）。
 - **远程仓库**：`https://github.com/yz8023/safe-apk.git`（分支 `260911-fix-anr-frost-group-round-float`）。
 - **备用镜像**：`https://kkgithub.com/yz8023/safe-apk.git`（无法直连 GitHub 时使用）。
 
