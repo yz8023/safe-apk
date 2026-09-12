@@ -36,7 +36,13 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
 
 object FrostDexUtils {
-    private val codeOffAppearMap = ConcurrentHashMap<String, Int>()
+    // 按 dex 分桶的 code_offset 出现次数统计。原先使用单一共享 map 并在每次
+    // saveCodeOffAppear 中 clear()：阶段3 并行抽取时，各 dex 线程的 clear 会互相
+    // 冲掉对方刚写入的计数，使共享 code_off 的判定在 0/1/2 间随机抖动。被误判为
+    // unique 的共享方法会被抽取入池，而壳 so 按「跳过共享 code 方法」的顺序消费
+    // 池条目，池内多出的条目会让后续方法的还原位全部向后错位，形成 VerifyError。
+    // 改为 inner 桶后各 dex 独立统计，且不再在抽取过程中清空其它 dex 的数据。
+    private val codeOffAppearMap = ConcurrentHashMap<Int, ConcurrentHashMap<Int, Int>>()
     private val KEEP_IN_PLACE_PREFIXES = arrayOf("Landroidx/compose/")
 
     /**
@@ -136,7 +142,7 @@ object FrostDexUtils {
     }
 
     private fun saveCodeOffAppear(dex: Dex, dexIndex: Int) {
-        codeOffAppearMap.clear()
+        val bucket = ConcurrentHashMap<Int, Int>()
         val classDefs = dex.classDefs()
         for (classDef in classDefs) {
             val classDataOffset = classDef.classDataOffset
@@ -144,9 +150,10 @@ object FrostDexUtils {
             val classData = dex.readClassData(classDef)
             for (method in classData.allMethods()) {
                 if (method.codeOffset == 0) continue
-                codeOffAppearMap.merge(dexIndex.toString() + "_" + method.codeOffset, 1) { a, b -> a + b }
+                bucket.merge(method.codeOffset, 1) { a, b -> a + b }
             }
         }
+        codeOffAppearMap[dexIndex] = bucket
     }
 
     @Throws(IOException::class)
@@ -173,7 +180,7 @@ object FrostDexUtils {
 
     private fun getCodeOffAppearCount(dexIndex: Int, codeOff: Int): Int {
         return try {
-            val appearCount = codeOffAppearMap[dexIndex.toString() + "_" + codeOff]
+            val appearCount = codeOffAppearMap[dexIndex]?.get(codeOff)
             appearCount ?: 0
         } catch (e: Exception) {
             e.printStackTrace()
@@ -216,8 +223,19 @@ object FrostDexUtils {
                 // 前缀型规则（Landroidx/.* 等）可被 .* 吞掉尾巴而侥幸命中，但精确类名规则
                 // （无 .* 通配）会因 extends 尾巴导致 matches() 失败，保护类被错误抽取。
                 // 统一用纯 descriptor 保证两类规则都精确匹配。
+                //
+                // 注意：此处不按 excludeRules/matchRules 跳过整类。壳 so 在还原时按「所有有
+                // code 的方法」顺序盲消费指令池条目（无 stub 检测，仅以池条目自带 methodIndex
+                // 作为 RC4 解密密钥）。只要某个 dex 内存在任一有 code 的方法未入池（无论被
+                // methodFilter 还是排除类规则跳过），该 dex 的池块即为「非全量」，顺序消费立即
+                // 错位：未入池方法会抢走相邻池条目、被覆写为其他方法的指令，还原后的方法头
+                // outs_size 与指令需求不匹配，class 加载抛 VerifyError「invalid argument count
+                // exceeds outsSize」。真实场景中 Android 应用 dex 几乎必然混排第三方类（kotlin/
+                // androidx/gson 等），excludeRules 类级跳过会让主 dex 变成非全量块，与 methodFilter
+                // 一样触发错位，故抽取阶段必须全类全量抽取。
+                // 关键词/类级排除仍作用于字符串加密、混淆、类字段重命名等其它 pass（它们按类名
+                // 独立处理、不影响方法体抽取的顺序对齐）。
                 val className = dex.typeNames()[classDef.typeIndex]
-                if (FrostProtectRules.getInstance().matchRules(className)) continue
                 val classJSONObject = if (dumpCode) JSONObject() else null
                 val classJSONArray = if (dumpCode) JSONArray() else null
                 val classData = dex.readClassData(classDef)
@@ -227,14 +245,13 @@ object FrostDexUtils {
                         FrostLogUtils.noisy("codeoff 0x%x appear many times", method.codeOffset)
                         continue
                     }
-                    if (!FrostProtectRules.getInstance().shouldExtractMethod(className, dex.strings()[dex.methodIds()[method.methodIndex].nameIndex], resolveMethodDescriptor(dex, method))) {
-                        FrostLogUtils.noisy(
-                            "method not matched, name = %s.%s (按规则保留原始指令)",
-                            FrostTypeUtils.getHumanizeTypeName(className),
-                            dex.strings()[dex.methodIds()[method.methodIndex].nameIndex]
-                        )
-                        continue
-                    }
+                    // 注意：此处不做 methodFilter 跳过。指令池是「被抽取方法」的子集，而壳 so 在还原时按
+                    // 「所有有 code 的方法」顺序盲消费池条目（无 stub 检测）。只要任一有 code 的方法未被抽取，
+                    // 池消费指针就会错位：未匹配方法会吃到下一条池条目、被覆写为其他方法的指令，还原后的
+                    // 方法头 outs_size 与指令需求不匹配，类加载抛 VerifyError「invalid argument count exceeds
+                    // outsSize」。基线全量抽取与该契约一致、可正常工作，故 methodFilter 规则在此阶段不生效，
+                    // 一律全量抽取 + stub + 入池，确保池与 so 消费顺序一一对齐。
+                    // methodFilter 语义如需保留，需要 so 支持按 methodIndex 精确查找（当前 so 不具备）。
                     val instruction = extractMethod(dex, randomAccessFile, classDef, method, smaller)
                     if (instruction == null) continue
                     instructionList.add(instruction)
@@ -260,26 +277,6 @@ object FrostDexUtils {
             dumpJSON(packageName, dexFile, dumpJSON)
         }
         return instructionList
-    }
-
-    /**
-     * 由 dex 方法解析出完整 descriptor："(Ljava/lang/String;I)V"（参数类型+返回类型）。
-     * 用于 `.method` 签名规则的精确匹配。
-     */
-    private fun resolveMethodDescriptor(dex: Dex, method: ClassData.Method): String {
-        return try {
-            val methodId = dex.methodIds()[method.methodIndex]
-            val protoId = dex.protoIds()[methodId.protoIndex]
-            val params = if (protoId.parametersOffset == 0) {
-                ""
-            } else {
-                dex.readTypeList(protoId.parametersOffset).types.joinToString("") { dex.typeNames()[it.toInt()] }
-            }
-            val returnType = dex.typeNames()[protoId.returnTypeIndex]
-            "($params)$returnType"
-        } catch (e: Exception) {
-            ""
-        }
     }
 
     private fun dumpJSON(packageName: String, originFile: File, array: JSONArray) {
