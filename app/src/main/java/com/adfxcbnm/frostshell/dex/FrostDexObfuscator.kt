@@ -786,6 +786,11 @@ object FrostDexObfuscator {
     // 为每个类添加 1-2 个 dummy 方法：方法名复用已有方法（跳过 <init>/<clinit>），
     // 参数为一个 int，返回 void，方法体 return-void。签名含返回类型避免重复定义冲突。
     fun applyMethodOverload(dexFile: File): Boolean {
+        // DISABLED: 向类中注入 dummy 方法会导致 dexlib2 RewrittenClassDef 序列化时
+        // 破坏同文件其他方法的 invoke-direct/range 指令（arg count 变为 0），
+        // 引发 VerifyError: invalid arg count (0) in invoke-direct/range
+        FrostLogUtils.info("method overload: disabled (known dexlib2 rewrite issue)")
+        return false
         val dex = try {
             com.adfxcbnm.frostshell.util.FrostDexUtils.loadDexPreservingVersion(dexFile)
         } catch (e: Exception) {
