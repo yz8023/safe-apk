@@ -149,11 +149,13 @@ GitHub 相关下载（.so/.jar/element）失败时按序尝试代理：
 
 ### 致命 / 严重问题
 
-1. **加固产物 VerifyError（三次真机复现，已根因定位 + 抽取侧修复，待真机终验）**
+1. **加固产物 VerifyError（三次真机复现，已根因定位 + 两轮抽取侧修复，待真机终验）**
    - 现象：`java.lang.VerifyError: Verifier rejected class ...MainActivity ... invalid argument count (8) exceeds outsSize (2)`，涉及 onCreate/onBackPressed/onDestroy/onActivityResult/c/e/f/b/d 等方法的指令因还原错位被换成了其他方法的字节（指令 outs 需求大于声明）。
-   - 根因（已完全定位，反汇编壳 so 证实）：壳 so 还原时按「方法记录的 method_index」直接索引池条目 vector（`0xa0868 vector[methodIndex]`），**并非按池文件顺序消费**，也**不跳过共享 code_item**。抽取侧必须保证：池条目数 == method_ids 总数、每个 method_index 恰一条、且按 method_index 升序连续排列。此前两个错位源：① 抽取阶段按 methodFilter/excludeRules 类级跳过方法（palm classes.dex 曾仅 9/61234 条入池）；② 即使全量抽取，method_ids 中仍有大量索引未在任何 class_data 中声明（palm classes.dex 65441 个 method_ids 中 4207 个缺失，classes7 65266 中 11195 个缺失），只遍历 class_data 生成的紧实池 vector 仍会错位（对齐率仅 9/62159）。
-   - 修复（v9.10.46，两遍结构）：第一遍按 class_data 顺序遍历所有方法，抽取指令、stub 写回（共享 code 用缓存原始指令、极小方法不 stub）、RC4 加密后按 method_index 存入 map；第二遍按 `dex.methodIds()` 全表 `0..methodCount` 顺序出池条目，map 未命中的索引全部补 size=0 占位条目。池条目数恒等于 method_ids 总数、天然升序、完全连续，`vector[methodIndex].methodIndex == methodIndex` 恒成立。
-   - 端到端验证（JVM，`/tmp/pool_test/verify_endtoend.java`）：对 palm 全部 5 个 dex 执行真实抽取+加密+写池，独立实现 RC4 解密逐条对比原 dex 指令——池条目数 == method_ids 数、连续唯一、解密命中 100%（classes.dex 61234/61234，classes7 54071/54071，classes4/2/8 全 PASS），不匹配 0。
+   - 根因 A（单 dex 内 method_index 维度，v9.10.46 修复）：壳 so 还原时按「方法记录的 method_index」直接索引池条目 vector（`0xa0868 vector[methodIndex]`），**并非按池文件顺序消费**，也**不跳过共享 code_item**。抽取侧必须保证：池条目数 == method_ids 总数、每个 method_index 恰一条、且按 method_index 升序连续排列。此前两个错位源：① 抽取阶段按 methodFilter/excludeRules 类级跳过方法（palm classes.dex 曾仅 9/61234 条入池）；② 即使全量抽取，method_ids 中仍有大量索引未在任何 class_data 中声明（palm classes.dex 65441 个 method_ids 中 4207 个缺失，classes7 65266 中 11195 个缺失），只遍历 class_data 生成的紧实池 vector 仍会错位（对齐率仅 9/62159）。
+   - 修复 A（v9.10.46，两遍结构，端到端验证 PASS）：第一遍按 class_data 顺序遍历所有方法，抽取指令、stub 写回（共享 code 用缓存原始指令、极小方法不 stub）、RC4 加密后按 method_index 存入 map；第二遍按 `dex.methodIds()` 全表 `0..methodCount` 顺序出池条目，map 未命中的索引全部补 size=0 占位条目。池条目数恒等于 method_ids 总数、天然升序、完全连续。
+   - 根因 B（多 dex「池块 ↔ dex 序号」维度，v9.10.47 修复）：v9.10.46 发布后 gitapp（9 dex 级、R8 混淆）冷启动仍全部方法错位。反汇编确认壳 so 池解析（`0x9ec94`）按 `dexCodesIndex[i]` 顺序给每 dex 建 512KB vector（`vector[i]=第 i 块`），还原时用运行时从 dex 标识解析出的序号 w21（`0x42880`，dex 文件名尾部数字 -1，如 classes2.dex→w21=1）定位 vector。因此契约还要求「池内第 k 块 == dexNo k 的方法」。原 `makeMultiDexCode` 按 HashMap 迭代序遍历且**缺失 dexNo 时跳过（continue）**、`dexCount=map.size`——任意 dexNo 缺失（抽取失败/并发 put 丢失）都会让该 dexNo 之后所有 dex 的整体块错位（整类 VerifyError 复现）。并实测 HashMap 并发 put 确有低频丢 key；palm 5 dex 因全成功而无此现象（故端到端 PASS 但 gitapp 必现崩溃）。
+   - 修复 B（v9.10.47）：`makeMultiDexCode` 改为按 `0..maxDexNo` 显式遍历，缺失 dexNo 写 methodCount=0 空块占位，`dexCount=maxDexNo+1`（不再依赖 map.size/迭代序）；阶段③抽取 map 由 HashMap 改 ConcurrentHashMap 消除并发丢 key。验证：`/tmp/pool_test/MultiDexVerify.java` 构造缺失 dexNo=3 的 9 dex 场景——修复前 5 块级联错位、修复后 0 错位（8 块正确 + 1 空块占位）。
+   - 待办：gitapp/palm 真机冷启动终验（v9.10.47 产物）。若仍崩，剩余变量集中于 so 端 w21 输入字符串语义与抽取端 dexNo 的一致性，需进一步逆向 `0x42880` 调用处。
 2. **抽取/壳契约依赖闭源 so，无文档**：池格式 version=2（version+dexCount+dexCodesIndex+各 dex[methodCount+条目区]），壳 so 以 method_index 索引条目、RC4 key = AES key + method_index(LE)，共享 code 还原用缓存原始指令；任何抽取侧改动必须保持「池 = method_ids 全集、按 method_index 升序、缺失索引占位」。该契约已写死并附端到端验证工具，应加回归断言（见 §7 P1 项）。
 
 ## 10. 架构简评
@@ -189,7 +191,7 @@ GitHub 相关下载（.so/.jar/element）失败时按序尝试代理：
 
 | 问题 | 解法 |
 |------|------|
-| 加固后 App 冷启动 `VerifyError: invalid argument count exceeds outsSize` | v9.10.46 池对齐两遍结构已修复（按 method_ids 全表出条目 + 缺失索引 size=0 占位）；若仍崩按 §9 检查壳 so 消费链对齐 |
+| 加固后 App 冷启动 `VerifyError: invalid argument count exceeds outsSize` | 单 dex 维度 v9.10.46 两遍结构已修复；多 dex 「池块↔装置序号」级联错位 v9.10.47 修复（按 dexNo 显式对齐 + 空块占位 + ConcurrentHashMap）。若仍崩按 §9 检查壳 so 消费链对齐 |
 | `CXX1409 custom target could not be found` | `rm -rf app/.cxx` 后重建 |
 | 打包报 `already contains entry 'assets/ironshell.jks'` | deps jar 不能混入 assets；jks 仅放 `app/src/main/assets/` |
 | `apksig` 类找不到（CLI 侧 RunFrost） | classpath 追加 `apksig-8.2.0.jar`（`~/.gradle/caches/modules-2/files-2.1/com.android.tools.build/apksig/...`） |
